@@ -14,5 +14,5 @@ cd /Users/ningyu/code_before_paper/MyI10Tele
 uv venv --seed
 source .venv/bin/activate
 uv sync
-python src/core/collect_vla_dataset.py --help
+python -m src.core.collect_vla_dataset --help
 ```

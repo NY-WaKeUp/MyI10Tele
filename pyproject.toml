@@ -7,5 +7,9 @@ requires-python = ">=3.12"
 dependencies = [
     "dm-control>=1.0.40",
     "ipykernel>=7.2.0",
+    "matplotlib>=3.10.9",
     "opencv-python>=4.13.0.92",
+    "pandas>=3.0.2",
+    "pynput>=1.8.1",
+    "termcolor>=3.3.0",
 ]

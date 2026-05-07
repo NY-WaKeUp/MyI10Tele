@@ -4,7 +4,7 @@
 
 ```bash
 source .venv/bin/activate
-python src/core/collect_vla_dataset.py \
+python -m src.core.collect_vla_dataset \
   --dataset-root /path/to/dataset \
   --episodes-per-task 30
 ```
@@ -15,7 +15,7 @@ Tasks are cycled in this order: `reach`, `grasp`, `place`.
 
 ```bash
 source .venv/bin/activate
-python src/dataset/check_dataset_quality.py \
+python -m src.dataset.check_dataset_quality \
   --dataset-root /path/to/dataset
 ```
 
@@ -23,7 +23,7 @@ python src/dataset/check_dataset_quality.py \
 
 ```bash
 source .venv/bin/activate
-python src/core/train_act.py \
+python -m src.core.train_act \
   --dataset-repo-id local/aubo-i10-vla \
   --dataset-root /path/to/dataset \
   --output-dir outputs/train/act_aubo_i10 \
@@ -39,7 +39,7 @@ If you need to inspect the generated `lerobot-train` command first:
 
 ```bash
 source .venv/bin/activate
-python src/core/train_act.py \
+python -m src.core.train_act \
   --dataset-repo-id local/aubo-i10-vla \
   --dataset-root /path/to/dataset \
   --dry-run

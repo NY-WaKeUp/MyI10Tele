@@ -74,6 +74,9 @@ class MujocoTeleopEnv:
         self.target_pos = np.zeros(3, dtype=np.float64)
         self.target_rot = np.eye(3, dtype=np.float64)
         self.gripper_target = 0.0
+        self._renderers: dict[tuple[int, int], mujoco.Renderer] = {}
+        self._cam_global = self.global_camera()
+        self._cam_wrist = self.wrist_camera()
 
     def _joint_id(self, name: str) -> int:
         return mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, name)
@@ -187,10 +190,22 @@ class MujocoTeleopEnv:
         return cam
 
     def render_main(self, width: int, height: int) -> np.ndarray:
-        return self.physics.render(height=height, width=width, camera_id="agentview")
+        renderer = self._get_renderer(width=width, height=height)
+        renderer.update_scene(self.data, camera=self._cam_global)
+        return renderer.render()
 
     def render_wrist(self, width: int, height: int) -> np.ndarray:
-        return self.physics.render(height=height, width=width, camera_id="wrist_cam")
+        renderer = self._get_renderer(width=width, height=height)
+        renderer.update_scene(self.data, camera=self._cam_wrist)
+        return renderer.render()
+
+    def _get_renderer(self, width: int, height: int) -> mujoco.Renderer:
+        key = (int(width), int(height))
+        renderer = self._renderers.get(key)
+        if renderer is None:
+            renderer = mujoco.Renderer(self.model, width=key[0], height=key[1])
+            self._renderers[key] = renderer
+        return renderer
 
 
 def default_model_path() -> str:

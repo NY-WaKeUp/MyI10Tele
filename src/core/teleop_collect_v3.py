@@ -1,4 +1,5 @@
 import argparse
+import platform
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,6 +14,20 @@ from src.core.mujoco_teleop_env import MujocoTeleopEnv, default_model_path
 from src.dataset.task_spec import TaskSpec
 
 
+def _ensure_keyboard_permission() -> None:
+    if platform.system() != "Darwin":
+        return
+    try:
+        import ApplicationServices  # type: ignore
+    except Exception as exc:
+        raise RuntimeError("Failed to import macOS accessibility checker (ApplicationServices).") from exc
+    if not bool(ApplicationServices.AXIsProcessTrusted()):
+        raise RuntimeError(
+            "Keyboard monitoring permission is not granted. "
+            "Enable terminal app in macOS System Settings -> Privacy & Security -> Accessibility and Input Monitoring, then restart terminal."
+        )
+
+
 @dataclass
 class KeyState:
     pressed: set[str]
@@ -20,19 +35,19 @@ class KeyState:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Keyboard teleop collection with LeRobot v3 layout.")
-    parser.add_argument("--dataset-root", type=str, required=True)
-    parser.add_argument("--repo-id", type=str, default="local/aubo-i10-inspire")
+    parser.add_argument("--data_dir", type=str, required=True)
+    parser.add_argument("--repo_id", type=str, default="local/aubo-i10-inspire")
     parser.add_argument("--task", type=str, default="Pick and place the colored cube.")
     parser.add_argument("--episodes", type=int, default=5)
-    parser.add_argument("--steps-per-episode", type=int, default=1500)
-    parser.add_argument("--physics-fps", type=int, default=100)
-    parser.add_argument("--video-fps", type=int, default=25)
+    parser.add_argument("--steps_per_episode", type=int, default=1500)
+    parser.add_argument("--physics_fps", type=int, default=100)
+    parser.add_argument("--video_fps", type=int, default=25)
     parser.add_argument("--width", type=int, default=640)
     parser.add_argument("--height", type=int, default=480)
-    parser.add_argument("--pos-step", type=float, default=0.002)
-    parser.add_argument("--rot-step-deg", type=float, default=1.0)
-    parser.add_argument("--ik-damping", type=float, default=1e-3)
-    parser.add_argument("--ik-gain", type=float, default=0.6)
+    parser.add_argument("--pos_step", type=float, default=0.002)
+    parser.add_argument("--rot_step_deg", type=float, default=1.0)
+    parser.add_argument("--ik_damping", type=float, default=1e-3)
+    parser.add_argument("--ik_gain", type=float, default=0.6)
     return parser.parse_args()
 
 
@@ -57,6 +72,7 @@ def _print_help() -> None:
 
 def main() -> None:
     args = parse_args()
+    _ensure_keyboard_permission()
     env = MujocoTeleopEnv(
         model_path=default_model_path(),
         seed=0,
@@ -69,14 +85,14 @@ def main() -> None:
     rot_step_rad = np.deg2rad(args.rot_step_deg)
 
     writer = LeRobotV3Writer(
-        dataset_root=args.dataset_root,
+        dataset_root=args.data_dir,
         repo_id=args.repo_id,
         fps=data_hz,
-        robot_type="aubo_i10_inspire_mujoco",
+        robot_type="aubo_i10_inspire",
         action_dim=7,
         state_dim=7,
     )
-    videos_root = Path(args.dataset_root) / "videos" / "main" / "chunk-000"
+    videos_root = Path(args.data_dir) / "videos" / "main" / "chunk-000"
 
     key_state = KeyState(pressed=set())
     command = {"save_episode": False, "discard_episode": False, "quit": False}
@@ -172,7 +188,7 @@ def main() -> None:
                 print(f"[saved] episode={episode_idx}, steps={len(states)}, video={video_relpath}")
 
         writer.finalize(task_descriptions=[args.task])
-        print(f"[done] dataset written to: {args.dataset_root}")
+        print(f"[done] dataset written to: {args.data_dir}")
     finally:
         listener.stop()
 

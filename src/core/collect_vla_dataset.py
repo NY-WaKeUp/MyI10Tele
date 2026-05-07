@@ -3,9 +3,9 @@ import time
 from pathlib import Path
 
 import cv2
+import glfw
 import numpy as np
 from mujoco import viewer
-from pynput import keyboard
 
 from src.core.mujoco_teleop_env import MujocoTeleopEnv, default_model_path
 from src.dataset.lerobot_v3_dataset import EpisodeRecord, LeRobotV3DatasetWriter
@@ -14,19 +14,19 @@ from src.dataset.task_spec import TASK_SPECS
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Collect teleop data for reach/grasp/place tasks.")
-    parser.add_argument("--dataset-root", type=str, required=True)
-    parser.add_argument("--repo-id", type=str, default="local/aubo-i10-inspire-vla")
-    parser.add_argument("--episodes-per-task", type=int, default=30)
-    parser.add_argument("--physics-fps", type=int, default=100)
-    parser.add_argument("--video-fps", type=int, default=25)
+    parser.add_argument("--data_dir", type=str, required=True)
+    parser.add_argument("--repo_id", type=str, default="local/aubo-i10-inspire-vla")
+    parser.add_argument("--episodes_per_task", type=int, default=30)
+    parser.add_argument("--physics_fps", type=int, default=100)
+    parser.add_argument("--video_fps", type=int, default=25)
     parser.add_argument("--width", type=int, default=640)
     parser.add_argument("--height", type=int, default=480)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--pos-step", type=float, default=0.002)
-    parser.add_argument("--rot-step", type=float, default=0.017)
-    parser.add_argument("--gripper-step", type=float, default=0.01)
-    parser.add_argument("--ik-damping", type=float, default=1e-3)
-    parser.add_argument("--ik-gain", type=float, default=0.6)
+    parser.add_argument("--pos_step", type=float, default=0.002)
+    parser.add_argument("--rot_step", type=float, default=0.017)
+    parser.add_argument("--gripper_step", type=float, default=0.01)
+    parser.add_argument("--ik_damping", type=float, default=1e-3)
+    parser.add_argument("--ik_gain", type=float, default=0.6)
     return parser.parse_args()
 
 
@@ -45,38 +45,52 @@ def build_action(keys: set[str], pos_step: float, rot_step: float, grip_step: fl
 def main() -> None:
     args = parse_args()
     env = MujocoTeleopEnv(default_model_path(), seed=args.seed, ik_damping=args.ik_damping, ik_gain=args.ik_gain)
-    writer = LeRobotV3DatasetWriter(root=args.dataset_root, fps=args.physics_fps, repo_id=args.repo_id)
+    writer = LeRobotV3DatasetWriter(root=args.data_dir, fps=args.physics_fps, repo_id=args.repo_id, robot_type="aubo_i10_inspire")
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
 
     sim_steps_per_control = max(1, int(round((1.0 / args.physics_fps) / env.model.opt.timestep)))
     keys: set[str] = set()
     cmd = {"save": False, "discard": False, "quit": False}
 
-    def on_press(key: keyboard.Key | keyboard.KeyCode) -> None:
-        if hasattr(key, "char") and key.char is not None:
-            keys.add(key.char.lower())
+    key_map = {
+        glfw.KEY_W: "w",
+        glfw.KEY_A: "a",
+        glfw.KEY_S: "s",
+        glfw.KEY_D: "d",
+        glfw.KEY_R: "r",
+        glfw.KEY_F: "f",
+        glfw.KEY_I: "i",
+        glfw.KEY_J: "j",
+        glfw.KEY_K: "k",
+        glfw.KEY_L: "l",
+        glfw.KEY_U: "u",
+        glfw.KEY_O: "o",
+        glfw.KEY_LEFT_BRACKET: "[",
+        glfw.KEY_RIGHT_BRACKET: "]",
+    }
+
+    def on_key(keycode: int) -> None:
+        if keycode in key_map:
+            key_name = key_map[keycode]
+            if key_name in keys:
+                keys.discard(key_name)
+            else:
+                keys.add(key_name)
             return
-        if key == keyboard.Key.enter:
+        if keycode in (glfw.KEY_ENTER, glfw.KEY_KP_ENTER):
             cmd["save"] = True
-        elif key == keyboard.Key.backspace:
+        elif keycode == glfw.KEY_BACKSPACE:
             cmd["discard"] = True
-        elif key == keyboard.Key.esc:
+        elif keycode == glfw.KEY_ESCAPE:
             cmd["quit"] = True
 
-    def on_release(key: keyboard.Key | keyboard.KeyCode) -> None:
-        if hasattr(key, "char") and key.char is not None:
-            keys.discard(key.char.lower())
-
-    listener = keyboard.Listener(on_press=on_press, on_release=on_release)
-    listener.start()
-
-    print("Controls: wasd/rf move, ijkluo rotate, [/ ] gripper, Enter save, Backspace discard, Esc quit")
+    print("Controls (MuJoCo window): wasd/rf move, ijkluo rotate, [/ ] gripper, Enter save, Backspace discard, Esc quit")
+    print("Movement keys are toggled by key events in the viewer window.")
     episode_index = 0
     target_total = args.episodes_per_task * len(TASK_SPECS)
     saved = 0
 
-    try:
-        with viewer.launch_passive(env.model, env.data) as v:
+    with viewer.launch_passive(env.model, env.data, key_callback=on_key) as v:
             v.cam.azimuth = 0
             v.cam.elevation = -10
             v.cam.distance = 2.0
@@ -90,8 +104,8 @@ def main() -> None:
                 cmd["discard"] = False
 
                 main_rel, wrist_rel = writer.episode_video_paths(episode_index)
-                main_abs = Path(args.dataset_root) / main_rel
-                wrist_abs = Path(args.dataset_root) / wrist_rel
+                main_abs = Path(args.data_dir) / main_rel
+                wrist_abs = Path(args.data_dir) / wrist_rel
                 main_abs.parent.mkdir(parents=True, exist_ok=True)
                 wrist_abs.parent.mkdir(parents=True, exist_ok=True)
                 vw_main = cv2.VideoWriter(str(main_abs), fourcc, args.video_fps, (args.width, args.height))
@@ -148,11 +162,9 @@ def main() -> None:
                 saved += 1
                 episode_index += 1
                 cmd["save"] = False
-    finally:
-        listener.stop()
 
     writer.finalize()
-    print(f"[done] dataset saved at {args.dataset_root}")
+    print(f"[done] dataset saved at {args.data_dir}")
 
 
 if __name__ == "__main__":
