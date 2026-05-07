@@ -1,0 +1,93 @@
+<mujoco model="aubo_i10">
+  <compiler angle="radian" meshdir="meshes/" />
+  <asset>
+    <mesh name="aubo_i10_visual_link0" file="aubo_i10/visual/link0.obj" />
+    <mesh name="aubo_i10_collision_link0" file="aubo_i10/collision/link0.STL" />
+    <mesh name="aubo_i10_visual_link1_materialfbxasc032fbxasc03527" file="aubo_i10/visual/link1_materialfbxasc032fbxasc03527.obj" />
+    <mesh name="aubo_i10_visual_link1_materialfbxasc032fbxasc03528" file="aubo_i10/visual/link1_materialfbxasc032fbxasc03528.obj" />
+    <mesh name="aubo_i10_collision_link1" file="aubo_i10/collision/link1.STL" />
+    <mesh name="aubo_i10_visual_link2_materialfbxasc032fbxasc03528" file="aubo_i10/visual/link2_materialfbxasc032fbxasc03528.obj" />
+    <mesh name="aubo_i10_visual_link2_materialfbxasc032fbxasc03529" file="aubo_i10/visual/link2_materialfbxasc032fbxasc03529.obj" />
+    <mesh name="aubo_i10_collision_link2" file="aubo_i10/collision/link2.STL" />
+    <mesh name="aubo_i10_visual_link3_materialfbxasc032fbxasc03527" file="aubo_i10/visual/link3_materialfbxasc032fbxasc03527.obj" />
+    <mesh name="aubo_i10_visual_link3_materialfbxasc032fbxasc03528" file="aubo_i10/visual/link3_materialfbxasc032fbxasc03528.obj" />
+    <mesh name="aubo_i10_collision_link3" file="aubo_i10/collision/link3.STL" />
+    <mesh name="aubo_i10_visual_link4_materialfbxasc032fbxasc03527" file="aubo_i10/visual/link4_materialfbxasc032fbxasc03527.obj" />
+    <mesh name="aubo_i10_visual_link4_materialfbxasc032fbxasc03528" file="aubo_i10/visual/link4_materialfbxasc032fbxasc03528.obj" />
+    <mesh name="aubo_i10_collision_link4" file="aubo_i10/collision/link4.STL" />
+    <mesh name="aubo_i10_visual_link5_materialfbxasc032fbxasc03527" file="aubo_i10/visual/link5_materialfbxasc032fbxasc03527.obj" />
+    <mesh name="aubo_i10_visual_link5_materialfbxasc032fbxasc03528" file="aubo_i10/visual/link5_materialfbxasc032fbxasc03528.obj" />
+    <mesh name="aubo_i10_collision_link5" file="aubo_i10/collision/link5.STL" />
+    <mesh name="aubo_i10_visual_link6" file="aubo_i10/visual/link6.obj" />
+    <mesh name="aubo_i10_collision_link6" file="aubo_i10/collision/link6.STL" />
+    <material name="base_link_mat" rgba="1 1 1 1" specular="0" />
+    <material name="wrist3_Link_mat" rgba="1 1 1 1" specular="0" />
+    <material name="shoulder_Link_mat_1" rgba="0.4118 0.4118 0.4118 1" specular="0" />
+    <material name="shoulder_Link_mat_2" rgba="0.9098 0.5137 0 1" specular="0" />
+    <material name="upperArm_Link_mat_1" rgba="0.4118 0.4118 0.4118 1" specular="0" />
+    <material name="upperArm_Link_mat_2" rgba="0.9098 0.5137 0 1" specular="0" />
+    <material name="foreArm_Link_mat_1" rgba="0.9098 0.5137 0 1" specular="0" />
+    <material name="foreArm_Link_mat_2" rgba="0.4118 0.4118 0.4118 1" specular="0" />
+    <material name="wrist1_Link_mat_1" rgba="0.9098 0.5137 0 1" specular="0" />
+    <material name="wrist1_Link_mat_2" rgba="0.4118 0.4118 0.4118 1" specular="0" />
+    <material name="wrist2_Link_mat_1" rgba="0.9098 0.5137 0 1" specular="0" />
+    <material name="wrist2_Link_mat_2" rgba="0.4118 0.4118 0.4118 1" specular="0" />
+  </asset>
+
+  <worldbody>
+    <body name="base_link" pos="0 0 0">
+      <inertial pos="0.000136 0.001601 0.018986" mass="2.592" fullinertia="0.008524 0.007934 0.015304 -0.000001 -0.000005 -0.000081"/>
+      <geom pos="0 0 0" group="1" contype="0" conaffinity="0" material="base_link_mat" type="mesh" mesh="aubo_i10_visual_link0" />
+      <geom pos="0 0 0" quat="0.7002416 0 0 -0.7139059" rgba="0.9373 0.2667 0.2667 1" group="3" contype="1" conaffinity="1" type="mesh" mesh="aubo_i10_collision_link0" />
+      <body name="shoulder_Link" pos="0 0 0.1632" quat="0 0 0 1">
+        <joint name="shoulder_joint" type="hinge" axis="0 0 1" limited="true" range="-6.2831853 6.2831853" damping="0" frictionloss="0"/>
+        <inertial pos="-0.000004 0.005112 -0.026275" mass="10.180139" fullinertia="0.043326 0.042233 0.029902 0.000003 0.000003 -0.001767"/>
+        <geom pos="0 0 0" group="1" contype="0" conaffinity="0" material="shoulder_Link_mat_1" type="mesh" mesh="aubo_i10_visual_link1_materialfbxasc032fbxasc03527" />
+        <geom pos="0 0 0" group="1" contype="0" conaffinity="0" material="shoulder_Link_mat_2" type="mesh" mesh="aubo_i10_visual_link1_materialfbxasc032fbxasc03528" />
+        <geom pos="0 0 0" rgba="0.9373 0.2667 0.2667 1" group="3" contype="1" conaffinity="1" type="mesh" mesh="aubo_i10_collision_link1" />
+        <body name="upperArm_Link" pos="0 0.2013 0" quat="0.5 -0.5 -0.5 -0.5">
+          <joint name="upperArm_joint" type="hinge" axis="0 0 1" limited="true" range="-6.2831853 6.2831853" damping="0" frictionloss="0"/>
+          <inertial pos="0.231117 -0.000013 -0.022852" mass="18.096361" fullinertia="0.064904 1.524623 1.505664 0.00003 -0.033711 0.000015"/>
+          <geom pos="0 0 0" group="1" contype="0" conaffinity="0" material="upperArm_Link_mat_1" type="mesh" mesh="aubo_i10_visual_link2_materialfbxasc032fbxasc03528" />
+          <geom pos="0 0 0" group="1" contype="0" conaffinity="0" material="upperArm_Link_mat_2" type="mesh" mesh="aubo_i10_visual_link2_materialfbxasc032fbxasc03529" />
+          <geom pos="0 0 0" rgba="0.9373 0.2667 0.2667 1" group="3" contype="1" conaffinity="1" type="mesh" mesh="aubo_i10_collision_link2" />
+          <body name="foreArm_Link" pos="0.647 0 0" quat="0 -1 0 0">
+            <joint name="foreArm_joint" type="hinge" axis="0 0 1" limited="true" range="-6.2831853 6.2831853" damping="0" frictionloss="0"/>
+            <inertial pos="0.41956 -0.000019 0.118053" mass="4.448092" fullinertia="0.006799 0.246194 0.24479 0.000016 0.004004 0.000005"/>
+            <geom pos="0 0 0" group="1" contype="0" conaffinity="0" material="foreArm_Link_mat_1" type="mesh" mesh="aubo_i10_visual_link3_materialfbxasc032fbxasc03527" />
+            <geom pos="0 0 0" group="1" contype="0" conaffinity="0" material="foreArm_Link_mat_2" type="mesh" mesh="aubo_i10_visual_link3_materialfbxasc032fbxasc03528" />
+            <geom pos="0 0 0" rgba="0.9373 0.2667 0.2667 1" group="3" contype="1" conaffinity="1" type="mesh" mesh="aubo_i10_collision_link3" />
+            <body name="wrist1_Link" pos="0.6005 0 0" quat="0 0.7071068 0.7071068 0">
+              <joint name="wrist1_joint" type="hinge" axis="0 0 1" limited="true" range="-6.2831853 6.2831853" damping="0" frictionloss="0"/>
+              <inertial pos="0.000047 0.009773 -0.005726" mass="1.79166" fullinertia="0.002457 0.00159 0.002183 0.000004 0.000001 -0.000123"/>
+              <geom pos="0 0 0" group="1" contype="0" conaffinity="0" material="wrist1_Link_mat_1" type="mesh" mesh="aubo_i10_visual_link4_materialfbxasc032fbxasc03527" />
+              <geom pos="0 0 0" group="1" contype="0" conaffinity="0" material="wrist1_Link_mat_2" type="mesh" mesh="aubo_i10_visual_link4_materialfbxasc032fbxasc03528" />
+              <geom pos="0 0 0" rgba="0.9373 0.2667 0.2667 1" group="3" contype="1" conaffinity="1" type="mesh" mesh="aubo_i10_collision_link4" />
+              <body name="wrist2_Link" pos="0 0.1025 0" quat="0.7071068 -0.7071068 0 0">
+                <joint name="wrist2_joint" type="hinge" axis="0 0 1" limited="true" range="-6.2831853 6.2831853" damping="0" frictionloss="0"/>
+                <inertial pos="-0.000038 -0.011278 -0.001539" mass="1.628022" fullinertia="0.001951 0.001154 0.001931 0.000003 -0.000001 0.000042"/>
+                <geom pos="0 0 0" group="1" contype="0" conaffinity="0" material="wrist2_Link_mat_1" type="mesh" mesh="aubo_i10_visual_link5_materialfbxasc032fbxasc03527" />
+                <geom pos="0 0 0" group="1" contype="0" conaffinity="0" material="wrist2_Link_mat_2" type="mesh" mesh="aubo_i10_visual_link5_materialfbxasc032fbxasc03528" />
+                <geom pos="0 0 0" rgba="0.9373 0.2667 0.2667 1" group="3" contype="1" conaffinity="1" type="mesh" mesh="aubo_i10_collision_link5" />
+                <body name="wrist3_Link" pos="0 -0.094 0" quat="0.7071068 0.7071068 0 0">
+                  <joint name="wrist3_joint" type="hinge" axis="0 0 1" limited="true" range="-6.2831853 6.2831853" damping="0" frictionloss="0"/>
+                  <inertial pos="0.000022 0.0006 -0.017081" mass="0.1978" fullinertia="0.000118 0.000112 0.000184 0 0 0.000001"/>
+                  <geom pos="0 0 0" group="1" contype="0" conaffinity="0" material="wrist3_Link_mat" type="mesh" mesh="aubo_i10_visual_link6" />
+                  <geom pos="0 0 0" rgba="0.9373 0.2667 0.2667 1" group="3" contype="1" conaffinity="1" type="mesh" mesh="aubo_i10_collision_link6" />
+                </body>
+              </body>
+            </body>
+          </body>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+  <actuator>
+    <position name="shoulder_joint_servo" joint="shoulder_joint" kp="133.5" forcelimited="true" forcerange="-267 267" />
+    <position name="upperArm_joint_servo" joint="upperArm_joint" kp="133.5" forcelimited="true" forcerange="-267 267" />
+    <position name="foreArm_joint_servo" joint="foreArm_joint" kp="66.5" forcelimited="true" forcerange="-133 133" />
+    <position name="wrist1_joint_servo" joint="wrist1_joint" kp="24.5" forcelimited="true" forcerange="-49 49" />
+    <position name="wrist2_joint_servo" joint="wrist2_joint" kp="6.75" forcelimited="true" forcerange="-13.5 13.5" />
+    <position name="wrist3_joint_servo" joint="wrist3_joint" kp="6.75" forcelimited="true" forcerange="-13.5 13.5" />
+  </actuator>
+</mujoco>
