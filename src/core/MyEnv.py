@@ -1,10 +1,34 @@
+import sys
+from pathlib import Path
+
 import numpy as np
-from src.core.mujoco_teleop_env import default_model_path
+
+# Ensure project root is importable so top-level `utils` package resolves in notebooks and scripts.
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(PROJECT_ROOT))
+
+from core.mujoco_teleop_env import default_model_path
 from utils.MujocoParser import MuJoCoParserClass
 from utils.utils import rotation_matrix,sample_xyzs,rpy2r,add_title_to_img,solve_ik
 from utils.transforms import r2rpy
 import glfw
 import copy
+
+HOME_ARM_QPOS = np.array(
+    [
+        -1.0568138360977173,
+        -0.48808249831199646,
+        1.3184903860092163,
+        0.22961488366127014,
+        1.5413566827774048,
+        0.5091112852096558,
+    ],
+    dtype=np.float64,
+)
+
+# Reset orientation target: make flange face vertically down.
+# A simple choice is roll=pi, pitch=0, yaw=0 (keeps x-axis along world +x).
+RESET_EE_RPY_RAD = np.array([np.pi, 0.0, 0.0], dtype=np.float64)
 
 class MyEnv:
     def __init__(
@@ -34,9 +58,12 @@ class MyEnv:
         Initialize the viewer
         '''
         self.env.reset()
+        # Match collect_vla_dataset.py (viewer.launch_passive camera block).
         self.env.init_viewer(
+            azimuth           = 0,
+            elevation         = -10,
             distance          = 2.0,
-            elevation         = -30, 
+            lookat            = np.array([0.4, -1.0, 0.43], dtype=np.float64),
             transparent       = False,
             black_sky         = True,
             use_rgb_overlay = False,
@@ -48,16 +75,22 @@ class MyEnv:
         Move the robot to a initial position, set the object positions based on the seed
         '''
         if seed != None: np.random.seed(seed=0) 
-        q_init = np.deg2rad([0,0,0,0,0,0])
-        q_zero,ik_err_stack,ik_info = solve_ik(
-            env = self.env,
-            joint_names_for_ik = self.joint_names,
-            body_name_trgt     = 'i10_inspire_flange_link',
-            q_init       = q_init, # ik from zero pose
-            p_trgt       = np.array([0.3,0.0,1.0]),
-            R_trgt       = rpy2r(np.deg2rad([90,-0.,90 ])),
+        # Compute EE position from HOME_ARM_QPOS by forward kinematics.
+        q_init = HOME_ARM_QPOS.copy()
+        self.env.forward(q=q_init, joint_names=self.joint_names, increase_tick=False)
+        p_home, _ = self.env.get_pR_body(body_name="i10_inspire_flange_link")
+
+        # Keep HOME-arm EE position but enforce downward flange orientation by IK.
+        R_trgt = rpy2r(RESET_EE_RPY_RAD)
+        q_zero, ik_err_stack, ik_info = solve_ik(
+            env=self.env,
+            joint_names_for_ik=self.joint_names,
+            body_name_trgt="i10_inspire_flange_link",
+            q_init=q_init,
+            p_trgt=p_home,
+            R_trgt=R_trgt,
         )
-        self.env.forward(q=q_zero,joint_names=self.joint_names,increase_tick=False)
+        self.env.forward(q=q_zero, joint_names=self.joint_names, increase_tick=False)
 
         # Set object positions
         obj_names = self.env.get_body_names(prefix='cube')
@@ -77,7 +110,7 @@ class MyEnv:
 
         # Set the initial pose of the robot
         self.last_q = copy.deepcopy(q_zero)
-        self.q = np.concatenate([q_zero, np.array([0.0]*4)])
+        self.q = np.concatenate([q_zero, np.array([0.0], dtype=np.float64)])
         self.p0, self.R0 = self.env.get_pR_body(body_name='i10_inspire_flange_link')
         mug_init_pose, plate_init_pose = self.get_obj_pose()
         self.obj_init_pose = np.concatenate([mug_init_pose, plate_init_pose],dtype=np.float32)
@@ -98,14 +131,14 @@ class MyEnv:
                 - joint_angle: [j1,j2,j3,j4,j5,j6]
 
         '''
-        if self.action_type == 'eef_pose':
+        if self.action_type == 'ee_pose':
             q = self.env.get_qpos_joints(joint_names=self.joint_names)
             self.p0 += action[:3]
             self.R0 = self.R0.dot(rpy2r(action[3:6]))
             q ,ik_err_stack,ik_info = solve_ik(
                 env                = self.env,
                 joint_names_for_ik = self.joint_names,
-                body_name_trgt     = 'tcp_link',
+                body_name_trgt     = 'i10_inspire_flange_link',
                 q_init             = q,
                 p_trgt             = self.p0,
                 R_trgt             = self.R0,
@@ -123,8 +156,7 @@ class MyEnv:
         else:
             raise ValueError('action_type not recognized')
 
-        gripper_cmd = np.array([action[-1]]*4)
-        gripper_cmd[[1,3]] *= 0.8
+        gripper_cmd = np.array([action[-1]], dtype=np.float64)
         self.compute_q = q
         q = np.concatenate([q, gripper_cmd])
 
@@ -151,13 +183,15 @@ class MyEnv:
         '''
         self.rgb_agent = self.env.get_fixed_cam_rgb(
             cam_name='agentview')
-        self.rgb_ego = self.env.get_fixed_cam_rgb(
-            cam_name='egocentric')
-        # self.rgb_top = self.env.get_fixed_cam_rgbd_pcd(
-        #     cam_name='topview')
-        self.rgb_side = self.env.get_fixed_cam_rgb(
-            cam_name='sideview')
-        return self.rgb_agent, self.rgb_ego
+        # self.rgb_ego = self.env.get_fixed_cam_rgb(
+        #     cam_name='egocentric')
+        # # self.rgb_top = self.env.get_fixed_cam_rgbd_pcd(
+        # #     cam_name='topview')
+        # self.rgb_side = self.env.get_fixed_cam_rgb(
+        #     cam_name='sideview')
+        self.rgb_wrist=self.env.get_fixed_cam_rgb(
+            cam_name='wrist_cam')
+        return self.rgb_agent, self.rgb_wrist
         
 
     def render(self, teleop=False):
@@ -165,7 +199,7 @@ class MyEnv:
         Render the environment
         '''
         self.env.plot_time()
-        p_current, R_current = self.env.get_pR_body(body_name='tcp_link')
+        p_current, R_current = self.env.get_pR_body(body_name='i10_inspire_flange_link')
         R_current = R_current @ np.array([[1,0,0],[0,0,1],[0,1,0 ]])
         self.env.plot_sphere(p=p_current, r=0.02, rgba=[0.95,0.05,0.05,0.5])
         self.env.plot_capsule(p=p_current, R=R_current, r=0.01, h=0.2, rgba=[0.05,0.95,0.05,0.5])
@@ -175,8 +209,9 @@ class MyEnv:
         self.env.viewer_rgb_overlay(rgb_agent_view,loc='top right')
         # self.env.viewer_rgb_overlay(rgb_egocentric_view,loc='bottom right')
         if teleop:
-            rgb_side_view = add_title_to_img(self.rgb_side,text='Side View',shape=(640,480))
-            self.env.viewer_rgb_overlay(rgb_side_view, loc='top left')
+            # rgb_side_view = add_title_to_img(self.rgb_side,text='Side View',shape=(640,480))
+            rgb_wrist_view = add_title_to_img(self.rgb_wrist,text='Wrist View',shape=(640,480))
+            self.env.viewer_rgb_overlay(rgb_wrist_view, loc='top left')
             self.env.viewer_text_overlay(text1='Key Pressed',text2='%s'%(self.env.get_key_pressed_list()))
             self.env.viewer_text_overlay(text1='Key Repeated',text2='%s'%(self.env.get_key_repeated_list()))
         self.env.render()
@@ -286,10 +321,10 @@ class MyEnv:
         Check if the mug is placed on the plate
         + Gripper should be open and move upward above 0.9
         '''
-        p_mug = self.env.get_p_body('body_obj_mug_5')
-        p_plate = self.env.get_p_body('body_obj_plate_11')
+        p_mug = self.env.get_p_body('cube')
+        p_plate = self.env.get_p_body('place_target_platform')
         if np.linalg.norm(p_mug[:2] - p_plate[:2]) < 0.1 and np.linalg.norm(p_mug[2] - p_plate[2]) < 0.6 and self.env.get_qpos_joint('rh_r1') < 0.1:
-            p = self.env.get_p_body('tcp_link')[2]
+            p = self.env.get_p_body('i10_inspire_flange_link')[2]
             if p > 0.9:
                 return True
         return False
@@ -300,8 +335,8 @@ class MyEnv:
             p_mug: np.array, position of the mug
             p_plate: np.array, position of the plate
         '''
-        p_mug = self.env.get_p_body('body_obj_mug_5')
-        p_plate = self.env.get_p_body('body_obj_plate_11')
+        p_mug = self.env.get_p_body('cube')
+        p_plate = self.env.get_p_body('place_target_platform')
         return p_mug, p_plate
     
     def set_obj_pose(self, p_mug, p_plate):
@@ -311,10 +346,10 @@ class MyEnv:
             p_mug: np.array, position of the mug
             p_plate: np.array, position of the plate
         '''
-        self.env.set_p_base_body(body_name='body_obj_mug_5',p=p_mug)
-        self.env.set_R_base_body(body_name='body_obj_mug_5',R=np.eye(3,3))
-        self.env.set_p_base_body(body_name='body_obj_plate_11',p=p_plate)
-        self.env.set_R_base_body(body_name='body_obj_plate_11',R=np.eye(3,3))
+        self.env.set_p_base_body(body_name='cube',p=p_mug)
+        self.env.set_R_base_body(body_name='cube',R=np.eye(3,3))
+        self.env.set_p_base_body(body_name='place_target_platform',p=p_plate)
+        self.env.set_R_base_body(body_name='place_target_platform',R=np.eye(3,3))
         self.step_env()
 
 
@@ -322,6 +357,6 @@ class MyEnv:
         '''
         get the end effector pose of the robot + gripper state
         '''
-        p, R = self.env.get_pR_body(body_name='tcp_link')
+        p, R = self.env.get_pR_body(body_name='i10_inspire_flange_link')
         rpy = r2rpy(R)
         return np.concatenate([p, rpy],dtype=np.float32)

@@ -8,11 +8,11 @@ import cv2
 import numpy as np
 from threading import Lock
 
-from utils import MyViewer
+from utils.MyViewer import MyViewer
 
 MUJOCO_VERSION = tuple(map(int,mujoco.__version__.split('.')))
 
-from .transforms import (
+from utils.transforms import (
     t2p,
     t2r,
     pr2t,
@@ -23,7 +23,7 @@ from .transforms import (
     meters2xyz,
     get_rotation_matrix_from_two_points,
 )
-from .utils import (
+from utils.utils import (
     trim_scale,
     compute_view_params,
     get_idxs,

@@ -6,7 +6,7 @@ import mujoco
 import numpy as np
 from scipy.spatial.transform import Rotation as R
 
-from src.dataset.task_spec import TaskSpec
+from dataset.task_spec import TaskSpec
 
 
 AUBO_I10_HOME_ARM_RAD = np.array(

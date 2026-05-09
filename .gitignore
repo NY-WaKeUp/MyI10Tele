@@ -7,4 +7,24 @@ wheels/
 *.egg-info
 
 # Virtual environments
-.venv
+.venv/
+venv/
+env/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS / editor noise
+.DS_Store
+.history/
+.specstory/
+
+# Secrets / local env (do not commit keys)
+.env
+.env.*
+
+# Large generated assets (teleop / dataset dumps — keeps Git UI under VS Code limits)
+data/images/
+data/videos/
+data/chunk-*/
+data/**/*.parquet
