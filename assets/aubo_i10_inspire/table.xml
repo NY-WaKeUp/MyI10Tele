@@ -9,7 +9,7 @@
            <!-- Aim ~12 cm above ee_site z (same xy) so frame looks slightly higher than straight-at-ee. -->
            <body name="agentview_bracket" pos="0.30 -1.5 1">
                 <inertial pos="0 0 0" mass="0.01" diaginertia="1e-6 1e-6 1e-6"/>
-                <geom name="agentview_housing" type="box" size="0.055 0.055 0.018" pos="0 0 0" rgba="0.2 0.2 0.22 1" contype="0" conaffinity="0" group="1"/>
+                <geom name="agentview_housing" type="box" size="0.055 0.055 0.018" pos="0 0 0" rgba="0.2 0.2 0.22 0" contype="0" conaffinity="0" group="1"/>
                 <camera name="agentview" pos="0 0 0" xyaxes="0.999969 -0.007822 0  0.005522 0.705886 0.708304" fovy="55"/>
             </body>
         </body>

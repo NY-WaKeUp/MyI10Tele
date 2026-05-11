@@ -7,12 +7,38 @@ import numpy as np
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from core.mujoco_teleop_env import default_model_path
 from utils.MujocoParser import MuJoCoParserClass
 from utils.utils import rotation_matrix,sample_xyzs,rpy2r,add_title_to_img,solve_ik
-from utils.transforms import r2rpy
+from utils.transforms import r2quat, r2rpy
 import glfw
 import copy
+import mujoco
+from dataclasses import dataclass
+
+
+class TypedNdArray(np.ndarray):
+    """
+    A numpy ndarray subclass carrying a lightweight semantic tag in `.type`.
+
+    This keeps full ndarray behavior (shape/dtype/serialization) while enabling
+    convenient runtime type checks in notebooks and data pipelines.
+    """
+
+    type: str
+
+    def __new__(cls, input_array, type: str):
+        obj = np.asarray(input_array).view(cls)
+        obj.type = type
+        return obj
+
+    def __array_finalize__(self, obj):
+        if obj is None:
+            return
+        self.type = getattr(obj, "type", None)
+
+
+def as_typed(x: np.ndarray, type: str) -> TypedNdArray:
+    return TypedNdArray(x, type=type)
 
 HOME_ARM_QPOS = np.array(
     [
@@ -30,17 +56,24 @@ HOME_ARM_QPOS = np.array(
 # A simple choice is roll=pi, pitch=0, yaw=0 (keeps x-axis along world +x).
 RESET_EE_RPY_RAD = np.array([np.pi, 0.0, 0.0], dtype=np.float64)
 
+# Default cube pose from assets/aubo_i10_inspire/myscene.xml <body name="cube" pos="...">.
+CUBE_SPAWN_XYZ = np.array([0.2711248850767859, -1.1, 0.255], dtype=np.float64)
+# Randomize around that pose (meters). z fixed on table; tighten/loosen as needed.
+CUBE_SAMPLE_DX = 0.08
+CUBE_SAMPLE_DY = 0.05
+CUBE_SAMPLE_DZ = 0.0
+
 class MyEnv:
     def __init__(
         self,
         xml_path: str | None = None,
-        action_type: str = "ee_pose",  # or 'qpos'
-        state_type: str = "qpos",  # or 'ee_pose'
+        action_type: str = "ee_pose",  # or 'qpos' or 'delta_qpos'
+        state_type: str = "qpos",  # or 'ee_pose' or 'delta_qpos'
         seed: int = 0,
         ik_damping: float = 1e-3,
         ik_gain: float = 0.6,
     ) -> None:
-        model_path = xml_path if xml_path is not None else default_model_path()
+        model_path = xml_path 
         self.env=MuJoCoParserClass(name="myenv", rel_xml_path=model_path)
         self.action_type = action_type
         self.state_type = state_type
@@ -60,7 +93,7 @@ class MyEnv:
         self.env.reset()
         # Match collect_vla_dataset.py (viewer.launch_passive camera block).
         self.env.init_viewer(
-            azimuth           = 0,
+            azimuth           = -10,
             elevation         = -10,
             distance          = 2.0,
             lookat            = np.array([0.4, -1.0, 0.43], dtype=np.float64),
@@ -95,13 +128,14 @@ class MyEnv:
         # Set object positions
         obj_names = self.env.get_body_names(prefix='cube')
         n_obj = len(obj_names)
+        cx, cy, cz = float(CUBE_SPAWN_XYZ[0]), float(CUBE_SPAWN_XYZ[1]), float(CUBE_SPAWN_XYZ[2])
         obj_xyzs = sample_xyzs(
             n_obj,
-            x_range   = [+0.24,+0.4],
-            y_range   = [-0.2,+0.2],
-            z_range   = [0.82,0.82],
-            min_dist  = 0.2,
-            xy_margin = 0.0
+            x_range=[cx - CUBE_SAMPLE_DX, cx + CUBE_SAMPLE_DX],
+            y_range=[cy - CUBE_SAMPLE_DY, cy + CUBE_SAMPLE_DY],
+            z_range=[cz - CUBE_SAMPLE_DZ, cz + CUBE_SAMPLE_DZ],
+            min_dist=0.2,
+            xy_margin=0.0,
         )
         for obj_idx in range(n_obj):
             self.env.set_p_base_body(body_name=obj_names[obj_idx],p=obj_xyzs[obj_idx,:])
@@ -117,7 +151,7 @@ class MyEnv:
         for _ in range(100):
             self.step_env()
         print("DONE INITIALIZATION")
-        self.gripper_state = False
+        self.gripper_close = True
         self.past_chars = []
 
     def step(self, action):
@@ -128,7 +162,7 @@ class MyEnv:
         returns:
             state: np.array, state of the environment after taking the action
                 - ee_pose: [px,py,pz,r,p,y]
-                - joint_angle: [j1,j2,j3,j4,j5,j6]
+                - qpos: [j1,j2,j3,j4,j5,j6]
 
         '''
         if self.action_type == 'ee_pose':
@@ -149,24 +183,25 @@ class MyEnv:
                 render             = False,
                 verbose_warning    = False,
             )
-        elif self.action_type == 'delta_joint_angle':
+        elif self.action_type == 'delta_qpos':
             q = action[:-1] + self.last_q
-        elif self.action_type == 'joint_angle':
+        elif self.action_type == 'qpos':
             q = action[:-1]
         else:
             raise ValueError('action_type not recognized')
 
-        gripper_cmd = np.array([action[-1]], dtype=np.float64)
+        gripper_close = np.array([action[-1]], dtype=np.float64)
         self.compute_q = q
-        q = np.concatenate([q, gripper_cmd])
+        q = np.concatenate([q, gripper_close])
 
         self.q = q
-        if self.state_type == 'joint_angle':
+        if self.state_type == 'qpos':
             return self.get_joint_state()
         elif self.state_type == 'ee_pose':
             return self.get_ee_pose()
-        elif self.state_type == 'delta_q' or self.action_type == 'delta_joint_angle':
+        elif self.state_type == 'delta_qpos' or self.action_type == 'delta_qpos':
             dq =  self.get_delta_q()
+            # Keep delta_qpos as plain ndarray for now (no stable semantic tag needed yet).
             return dq
         else:
             raise ValueError('state_type not recognized')
@@ -199,10 +234,10 @@ class MyEnv:
         Render the environment
         '''
         self.env.plot_time()
-        p_current, R_current = self.env.get_pR_body(body_name='i10_inspire_flange_link')
-        R_current = R_current @ np.array([[1,0,0],[0,0,1],[0,1,0 ]])
-        self.env.plot_sphere(p=p_current, r=0.02, rgba=[0.95,0.05,0.05,0.5])
-        self.env.plot_capsule(p=p_current, R=R_current, r=0.01, h=0.2, rgba=[0.05,0.95,0.05,0.5])
+        # p_current, R_current = self.env.get_pR_body(body_name='i10_inspire_flange_link')
+        # R_current = R_current @ np.array([[1,0,0],[0,0,1],[0,1,0]])
+        # self.env.plot_sphere(p=p_current, r=0.02, rgba=[0.95,0.05,0.05,0.5])
+        # self.env.plot_capsule(p=p_current, R=R_current, r=0.01, h=0.2, rgba=[0.05,0.95,0.05,0.5])
         # rgb_egocentric_view = add_title_to_img(self.rgb_ego,text='Egocentric View',shape=(640,480))
         rgb_agent_view = add_title_to_img(self.rgb_agent,text='Agent View',shape=(640,480))
         
@@ -225,8 +260,10 @@ class MyEnv:
         '''
         qpos = self.env.get_qpos_joints(joint_names=self.joint_names)
         gripper = self.env.get_qpos_joint('rh_r1')
-        gripper_cmd = 1.0 if gripper[0] > 0.5 else 0.0
-        return np.concatenate([qpos, [gripper_cmd]],dtype=np.float32)
+        gripper_close = 1.0 if gripper[0] > 0.1 else 0.0
+        q = np.concatenate([qpos, [gripper_close]], dtype=np.float32)
+        # User-facing semantic name: qpos (even though internal config uses "qpos").
+        return as_typed(q, type="qpos")
     
     def teleop_robot(self):
         '''
@@ -269,17 +306,17 @@ class MyEnv:
         dpos = np.zeros(3)
         drot = np.eye(3)
         if self.env.is_key_pressed_repeat(key=glfw.KEY_S):
-            dpos += np.array([0.007,0.0,0.0])
+            dpos += np.array([-0.002,0.0,0.0])
         if self.env.is_key_pressed_repeat(key=glfw.KEY_W):
-            dpos += np.array([-0.007,0.0,0.0])
+            dpos += np.array([0.002,0.0,0.0])
         if self.env.is_key_pressed_repeat(key=glfw.KEY_A):
-            dpos += np.array([0.0,-0.007,0.0])
+            dpos += np.array([0.0,0.002,0.0])
         if self.env.is_key_pressed_repeat(key=glfw.KEY_D):
-            dpos += np.array([0.0,0.007,0.0])
+            dpos += np.array([0.0,-0.002,0.0])
         if self.env.is_key_pressed_repeat(key=glfw.KEY_R):
-            dpos += np.array([0.0,0.0,0.007])
+            dpos += np.array([0.0,0.0,0.002])
         if self.env.is_key_pressed_repeat(key=glfw.KEY_F):
-            dpos += np.array([0.0,0.0,-0.007])
+            dpos += np.array([0.0,0.0,-0.002])
         if  self.env.is_key_pressed_repeat(key=glfw.KEY_I):
             drot = rotation_matrix(angle=0.1 * 0.3, direction=[0.0, 1.0, 0.0])[:3, :3]
         if  self.env.is_key_pressed_repeat(key=glfw.KEY_K):
@@ -294,12 +331,14 @@ class MyEnv:
             drot = rotation_matrix(angle=-0.1 * 0.3, direction=[0.0, 0.0, 1.0])[:3, :3]
         if self.env.is_key_pressed_once(key=glfw.KEY_Z):
             return np.zeros(7, dtype=np.float32), True
-        if self.env.is_key_pressed_once(key=glfw.KEY_LEFT_BRACKET):
-            self.gripper_state =  True
+        if self.env.is_key_pressed_once(key=glfw.KEY_LEFT_BRACKET): # 左闭右开 1闭0开
+            self.gripper_close =  True
+            print("Gripper close")
         if self.env.is_key_pressed_once(key=glfw.KEY_RIGHT_BRACKET):
-            self.gripper_state =  False
+            self.gripper_close =  False
+            print("Gripper open")
         drot = r2rpy(drot)
-        action = np.concatenate([dpos, drot, np.array([self.gripper_state],dtype=np.float32)],dtype=np.float32)
+        action = np.concatenate([dpos, drot, np.array([self.gripper_close],dtype=np.float32)],dtype=np.float32)
         return action, False
     
     def get_delta_q(self):
@@ -312,22 +351,42 @@ class MyEnv:
         delta = self.compute_q - self.last_q
         self.last_q = copy.deepcopy(self.compute_q)
         gripper = self.env.get_qpos_joint('rh_r1')
-        gripper_cmd = 1.0 if gripper[0] > 0.5 else 0.0
-        return np.concatenate([delta, [gripper_cmd]],dtype=np.float32)
+        gripper_close = 1.0 if gripper[0] > 0.1 else 0.0
+        gripper_delta=self.gripper_close - gripper_close
+        return np.concatenate([delta, [gripper_delta]],dtype=np.float32)
 
     def check_success(self):
         '''
-        ['body_obj_mug_5', 'body_obj_plate_11']
-        Check if the mug is placed on the plate
-        + Gripper should be open and move upward above 0.9
+        True when the cube is on the place deck (aligned with mujoco_teleop_env place logic) and gripper is close.
+        Tolerances come from geom place_target_deck sizes in myscene.xml.
         '''
-        p_mug = self.env.get_p_body('cube')
-        p_plate = self.env.get_p_body('place_target_platform')
-        if np.linalg.norm(p_mug[:2] - p_plate[:2]) < 0.1 and np.linalg.norm(p_mug[2] - p_plate[2]) < 0.6 and self.env.get_qpos_joint('rh_r1') < 0.1:
-            p = self.env.get_p_body('i10_inspire_flange_link')[2]
-            if p > 0.9:
-                return True
-        return False
+        model = self.env.model
+        deck_gid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "place_target_deck")
+        if deck_gid < 0:
+            raise RuntimeError("geom 'place_target_deck' not found (expected in myscene.xml)")
+        gs = np.asarray(model.geom_size[deck_gid], dtype=np.float64)
+        place_deck_half_z = float(gs[2])
+        place_tol_xy = float(0.75 * min(gs[0], gs[1]))
+        place_height_eps = float(0.25 * place_deck_half_z)
+
+        p_cube = self.env.get_p_body("cube")
+        p_platform = self.env.get_p_body("place_target_platform")
+        xy_ok = np.linalg.norm(p_cube[:2] - p_platform[:2]) < place_tol_xy
+        z_ok = p_cube[2] > p_platform[2] + place_deck_half_z - place_height_eps
+        gripper_open = float(self.env.get_qpos_joint("rh_r1")[0]) < 2.8e-6
+        #  close : 0.81454458 open :2.7e-6
+        
+        
+        # Check if the end effector has moved up and away from the cube
+        p_ee = self.env.get_p_body("i10_inspire_flange_link")
+        ee_away = (p_ee[2] - p_cube[2]) > 0.20  # 10 cm above the cube
+        # print(f"gripper_open: {gripper_open}")
+        # print(f"gripper_qpos: {float(self.env.get_qpos_joint("rh_r1")[0])}")
+        # print(f"gripper_state: {self.gripper_close}")
+        # print(f"xy_ok: {xy_ok}")
+        # print(f"z_ok: {z_ok}")
+        # print(f"ee_away: {ee_away}")
+        return bool(xy_ok and z_ok and gripper_open and ee_away)
     
     def get_obj_pose(self):
         '''
@@ -358,5 +417,24 @@ class MyEnv:
         get the end effector pose of the robot + gripper state
         '''
         p, R = self.env.get_pR_body(body_name='i10_inspire_flange_link')
-        rpy = r2rpy(R)
-        return np.concatenate([p, rpy],dtype=np.float32)
+        rpy = r2rpy(R) # note vla models 最常用，因为省token
+        # quat= r2quat(R)
+        ee = np.concatenate([p, rpy], dtype=np.float32)
+        return as_typed(ee, type="ee_pose")
+
+    def get_obs_action(self):
+        '''
+        get the observation and action
+        returns:
+            obs: np.array, observation
+            action: np.array, action
+        '''
+        if self.action_type == 'ee_pose':
+            obs_action = self.get_ee_pose()
+        elif self.action_type == 'qpos':
+            obs_action = self.get_joint_state()
+        elif self.action_type == 'delta_qpos':
+            obs_action = self.get_delta_q()
+        else:
+            raise ValueError('action_type not recognized')
+        return obs_action

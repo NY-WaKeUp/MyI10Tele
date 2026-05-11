@@ -1,14 +1,16 @@
 {
     "codebase_version": "v3.0",
     "robot_type": "aubo_i10_inspire",
-    "total_episodes": 0,
-    "total_frames": 0,
-    "total_tasks": 0,
+    "total_episodes": 10,
+    "total_frames": 6381,
+    "total_tasks": 1,
     "chunks_size": 1000,
     "data_files_size_in_mb": 100,
     "video_files_size_in_mb": 200,
     "fps": 20,
-    "splits": {},
+    "splits": {
+        "train": "0:10"
+    },
     "data_path": "data/chunk-{chunk_index:03d}/file-{file_index:03d}.parquet",
     "video_path": "videos/{video_key}/chunk-{chunk_index:03d}/file-{file_index:03d}.mp4",
     "features": {
@@ -41,7 +43,7 @@
         "observation.state": {
             "dtype": "float32",
             "shape": [
-                6
+                7
             ],
             "names": [
                 "state"
@@ -50,7 +52,7 @@
         "action": {
             "dtype": "float32",
             "shape": [
-                7
+                6
             ],
             "names": [
                 "action"
