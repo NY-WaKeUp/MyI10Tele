@@ -117,32 +117,34 @@
                   <body name="i10_inspire_flange_link" pos="0 0 0">
                     <inertial pos="0 0 0.005" mass="0.05" diaginertia="0.00001 0.00001 0.00001"/>
                     <geom pos="0 0 0.005" group="1" contype="0" conaffinity="0" material="i10_inspire_flange_link_mat" type="cylinder" size="0.04 0.005" />
-                    <geom pos="0 0 0.005" rgba="0.9373 0.2667 0.2667 1" group="3" contype="1" conaffinity="1" type="cylinder" size="0.04 0.005" />
+                    <geom pos="0 0 0.005" rgba="0.9373 0.2667 0.2667 1" group="3" contype="1" conaffinity="1" type="cylinder" size="0.04 0.005"
+                          friction="0.45 0.02 0.002" margin="0.001"/>
                     <body name="gripper_base_link" pos="0 0 0.01">
                       <inertial pos="-0.0000027 0.0000143 -0.040955" mass="0.075349" diaginertia="0.0000697 0.0000604 0.0000192"/>
                       <geom pos="0 0 0" group="1" contype="0" conaffinity="0" material="gripper_base_link_mat" type="mesh" mesh="gripper_base_link" />
                       <geom pos="0 0 0" rgba="0.9373 0.2667 0.2667 1" group="3" contype="1" conaffinity="1" type="mesh" mesh="gripper_base_link"
-                            margin="0.002" solref="0.008 1" solimp="0.99 0.995 0.0005"/>
+                            friction="0.45 0.02 0.002" margin="0.002" solref="0.008 1" solimp="0.99 0.995 0.0005"/>
                       <site name="ee_site" pos="0 0 0.145" size="0.02" rgba="0 1 0 0"/>
                       <!-- Wrist RGB bracket: fixed child of gripper_base_link; camera optical axis is -Z (MuJoCo). -->
                       <body name="wrist_cam_bracket" pos="-0.1 0 0.1">
                         <inertial pos="0 0 0" mass="0.001" diaginertia="1e-9 1e-9 1e-9"/>
                         <!-- Housing behind lens (+Z); visual only, no collision. -->
                         <geom name="wrist_cam_housing" type="box" size="0.018 0.012 0.022" pos="0 0 0.018" rgba="0.18 0.18 0.2 0" contype="0" conaffinity="0" group="1"/>
-                        <camera name="wrist_cam" pos="0 0 0" xyaxes="0 -1 0  -0.823213 0 0.567733" fovy="130"/>
+                        <!-- Camera pos: ~8 mm along optical axis (into scene) to reduce near-plane clipping; fovy unchanged. -->
+                        <camera name="wrist_cam" pos="0.004541864 0 0.006585704" xyaxes="0 -1 0  -0.823213 0 0.567733" fovy="130"/>
                       </body>
                       <body name="gripper_Link1" pos="0 -0.04 0.09" quat="0.9076481 0.419732 0 0">
                         <joint name="rh_r1" class="gripper" range="0 0.8663"/>
                         <inertial pos="0.0001 0.0085832 0.013664" mass="0.0024857" diaginertia="0.0000006 0.0000005 0.0000003"/>
                         <geom pos="0 0 0" group="1" contype="0" conaffinity="0" material="gripper_Link1_mat" type="mesh" mesh="gripper_Link1" />
                         <geom pos="0 0 0" rgba="0.9373 0.2667 0.2667 1" group="3" contype="1" conaffinity="1" type="mesh" mesh="gripper_Link1"
-                              margin="0.002" solref="0.008 1" solimp="0.99 0.995 0.0005"/>
+                              friction="0.45 0.02 0.002" margin="0.002" solref="0.008 1" solimp="0.99 0.995 0.0005"/>
                         <body name="gripper_Link2" pos="0 0.022341 0.035565" quat="0.9076481 -0.419732 0 0">
                           <joint name="rh_r2" class="gripper" range="-0.8663 0"/>
                           <inertial pos="0.0001 0.011846 0.011367" mass="0.0044927" diaginertia="0.0000004 0.0000004 0.0000002"/>
                           <geom pos="0 0 0" group="1" contype="0" conaffinity="0" material="gripper_Link2_mat" type="mesh" mesh="gripper_Link2" />
                           <geom pos="0 0 0" rgba="0.9373 0.2667 0.2667 1" group="3" contype="1" conaffinity="1" type="mesh" mesh="gripper_Link2"
-                                margin="0.002" solref="0.008 1" solimp="0.99 0.995 0.0005"/>
+                                friction="0.45 0.02 0.002" margin="0.002" solref="0.008 1" solimp="0.99 0.995 0.0005"/>
                         </body>
                       </body>
                       <body name="gripper_Link3" pos="0 0.04 0.09" quat="0.9076481 -0.419732 0 0">
@@ -150,13 +152,13 @@
                         <inertial pos="0.0001 -0.0085832 0.013664" mass="0.0024857" diaginertia="0.0000006 0.0000005 0.0000003"/>
                         <geom pos="0 0 0" group="1" contype="0" conaffinity="0" material="gripper_Link3_mat" type="mesh" mesh="gripper_Link3" />
                         <geom pos="0 0 0" rgba="0.9373 0.2667 0.2667 1" group="3" contype="1" conaffinity="1" type="mesh" mesh="gripper_Link3"
-                              margin="0.002" solref="0.008 1" solimp="0.99 0.995 0.0005"/>
+                              friction="0.45 0.02 0.002" margin="0.002" solref="0.008 1" solimp="0.99 0.995 0.0005"/>
                         <body name="tcp_link" pos="0 -0.022341 0.035565" quat="0.9076481 0.419732 0 0">
                           <joint name="rh_l2" class="gripper" range="0 0.8663"/>
                           <inertial pos="0.0001 -0.011846 0.011367" mass="0.0044926" diaginertia="0.0000004 0.0000004 0.0000002"/>
                           <geom pos="0 0 0" group="1" contype="0" conaffinity="0" material="tcp_link_mat" type="mesh" mesh="gripper_Link4" />
                           <geom pos="0 0 0" rgba="0.9373 0.2667 0.2667 1" group="3" contype="1" conaffinity="1" type="mesh" mesh="gripper_Link4"
-                                margin="0.002" solref="0.008 1" solimp="0.99 0.995 0.0005"/>
+                                friction="0.45 0.02 0.002" margin="0.002" solref="0.008 1" solimp="0.99 0.995 0.0005"/>
                         </body>
                       </body>
                     </body>

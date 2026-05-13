@@ -2,13 +2,13 @@
     <size memory="500M"/>
     <!-- Finger mesh vs box: small dt + high iterations + margins on geoms reduce tunneling. -->
     <option timestep="0.0005" integrator="implicitfast" iterations="400" tolerance="1e-9"
-            cone="elliptic" noslip_iterations="60"/>
+            cone="elliptic" noslip_iterations="28"/>
     <include file="aubo_i10_inspire.xml"/>
     <include file="table.xml"/>
 <worldbody>
     <!-- Black place deck: mocap body — pose set each reset in code (cube_xy + (-0.1,0), fixed z). -->
     <body name="place_target_platform" mocap="true" pos="0.1711248850767859 -1.1 0.238">
-        <geom name="place_target_deck" type="box" size="0.025 0.03 0.0125" rgba="0.02 0.02 0.02 1" contype="1" conaffinity="1" friction="1.2 0.6 0.01"/>
+        <geom name="place_target_deck" type="box" size="0.025 0.03 0.0125" rgba="0.02 0.02 0.02 1" contype="1" conaffinity="1" friction="1.2 0.6 0.01" margin="0.002"/>
     </body>
     <!-- Cube center z = table_top + geom half-height; table top z=0.23 (table.xml box pos.z + size.z). -->
     <body name="cube" pos="0.2711248850767859 -1.1 0.255">
@@ -17,7 +17,7 @@
       <freejoint/>
       <!-- Collision and inertia carrier -->
       <geom type="box" size="0.025 0.025 0.025" mass="0.070875" friction="0.95 0.3 0.1" contype="1" conaffinity="1"
-            rgba="0 0 0 0" margin="0.001" solref="0.001 1" solimp="0.998 0.998 0.001"/>
+            rgba="0 0 0 0" margin="0.003" solref="0.001 1" solimp="0.998 0.998 0.001"/>
       <!-- Visual-only colored faces -->
       <geom type="box" pos="-0.025 0 0" size="0.0005 0.025 0.025" mass="0" contype="0" conaffinity="0" rgba="1 0 0 1"/>
       <geom type="box" pos="0.025 0 0" size="0.0005 0.025 0.025" mass="0" contype="0" conaffinity="0" rgba="0 1 0 1"/>

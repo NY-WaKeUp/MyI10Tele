@@ -11,6 +11,16 @@ wheels/
 venv/
 env/
 
+# Test / type / coverage tooling
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.hypothesis/
+
 # Jupyter
 .ipynb_checkpoints/
 
@@ -23,8 +33,19 @@ env/
 .env
 .env.*
 
+# Experiment / run logs (optional local noise)
+wandb/
+lightning_logs/
+*.log
+
 # Large generated assets (teleop / dataset dumps — keeps Git UI under VS Code limits)
 data/images/
 data/videos/
 data/chunk-*/
 data/**/*.parquet
+
+# Second dataset root (same policy as data/)
+data2/images/
+data2/videos/
+data2/chunk-*/
+data2/**/*.parquet

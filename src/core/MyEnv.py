@@ -56,12 +56,74 @@ HOME_ARM_QPOS = np.array(
 # A simple choice is roll=pi, pitch=0, yaw=0 (keeps x-axis along world +x).
 RESET_EE_RPY_RAD = np.array([np.pi, 0.0, 0.0], dtype=np.float64)
 
-# Default cube pose from assets/aubo_i10_inspire/myscene.xml <body name="cube" pos="...">.
-CUBE_SPAWN_XYZ = np.array([0.2711248850767859, -1.1, 0.255], dtype=np.float64)
+# Must match assets/aubo_i10_inspire/myscene.xml <body pos="..."> exactly.
+CUBE_SPAWN_XYZ = np.array([0.3211248850767859, -1.1, 0.255], dtype=np.float64)
+TARGET_SPAWN_XYZ = np.array([0.1211248850767859, -1.1, 0.238], dtype=np.float64)
 # Randomize around that pose (meters). z fixed on table; tighten/loosen as needed.
 CUBE_SAMPLE_DX = 0.08
 CUBE_SAMPLE_DY = 0.05
 CUBE_SAMPLE_DZ = 0.0
+
+TARGET_SAMPLE_DX = 0.05
+TARGET_SAMPLE_DY = 0.05
+TARGET_SAMPLE_DZ = 0.0
+
+# Black deck geom half-sizes from myscene.xml: <geom name="place_target_deck" ... size="0.025 0.03 0.0125"/>
+PLACE_TARGET_DECK_HALF_DEFAULT = np.array([0.025, 0.03, 0.0125], dtype=np.float64)
+# Per-axis multiplicative jitter for deck XY footprint and thickness (world-box half extents).
+PLACE_TARGET_DECK_SIZE_SCALE_LOW = 0.9
+PLACE_TARGET_DECK_SIZE_SCALE_HIGH = 1.1
+
+# Body-axis directions for cube faces (outward normals along ±x, ±y, ±z in body frame).
+_CUBE_FACE_NORMALS = (
+    np.array([1.0, 0.0, 0.0], dtype=np.float64),
+    np.array([-1.0, 0.0, 0.0], dtype=np.float64),
+    np.array([0.0, 1.0, 0.0], dtype=np.float64),
+    np.array([0.0, -1.0, 0.0], dtype=np.float64),
+    np.array([0.0, 0.0, 1.0], dtype=np.float64),
+    np.array([0.0, 0.0, -1.0], dtype=np.float64),
+)
+
+
+def _rotation_align_vec_to_z(a: np.ndarray) -> np.ndarray:
+    """
+    Return R in SO(3) such that R @ a == e_z, with a a unit 3-vector.
+    Used to place a random cube face horizontal facing up (world +z).
+    """
+    e_z = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+    a = np.asarray(a, dtype=np.float64).reshape(3)
+    n = a / np.linalg.norm(a)
+    if np.linalg.norm(n - e_z) < 1e-9:
+        return np.eye(3, dtype=np.float64)
+    if np.linalg.norm(n + e_z) < 1e-9:
+        # 180° about x sends -z to +z
+        return np.array([[1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, -1.0]], dtype=np.float64)
+    axis = np.cross(n, e_z)
+    s = np.linalg.norm(axis)
+    axis = axis / s
+    c = float(np.dot(n, e_z))
+    theta = np.arctan2(s, c)
+    ux, uy, uz = axis
+    K = np.array([[0.0, -uz, uy], [uz, 0.0, -ux], [-uy, ux, 0.0]], dtype=np.float64)
+    return np.eye(3) + np.sin(theta) * K + (1.0 - np.cos(theta)) * (K @ K)
+
+
+def sample_cube_orientation_R(rng: np.random.Generator | None = None) -> np.ndarray:
+    """
+    Flat on the table with a random "top" face: uniformly pick one of six body
+    normals n in {±x,±y,±z}, build R_align with R_align @ n = e_z, then apply
+    a uniform yaw about world +z. The yaw does not change which face is up for
+    this sample; the next call draws a new face index again.
+
+    rng: optional ``numpy.random.Generator``; if None, uses global ``numpy.random``.
+    """
+    rnd = np.random if rng is None else rng
+    n_body = _CUBE_FACE_NORMALS[int(rnd.integers(0, 6))]
+    yaw = float(rnd.uniform(0.0, 2.0 * np.pi))
+    R_align = _rotation_align_vec_to_z(n_body)
+    R_yaw = rpy2r(np.array([0.0, 0.0, yaw], dtype=np.float64))
+    return R_yaw @ R_align
+
 
 class MyEnv:
     def __init__(
@@ -69,7 +131,7 @@ class MyEnv:
         xml_path: str | None = None,
         action_type: str = "ee_pose",  # or 'qpos' or 'delta_qpos'
         state_type: str = "qpos",  # or 'ee_pose' or 'delta_qpos'
-        seed: int = 0,
+        seed: int | None = None,
         ik_damping: float = 1e-3,
         ik_gain: float = 0.6,
     ) -> None:
@@ -84,7 +146,10 @@ class MyEnv:
                     'wrist2_joint',
                     'wrist3_joint',]
         self.init_viewer()
-        self.reset(seed)
+        # Layout/cube sampling uses this generator so libraries (e.g. dataset code)
+        # cannot poison global ``numpy.random`` and freeze cube orientation across resets.
+        self._layout_rng = np.random.default_rng(seed)
+        self.reset(seed=None)
 
     def init_viewer(self):
         '''
@@ -104,10 +169,17 @@ class MyEnv:
         )
     def reset(self, seed = None):
         '''
-        Reset the environment
-        Move the robot to a initial position, set the object positions based on the seed
+        Reset the environment: robot pose, sampled cube/target layout, etc.
+
+        Layout randomness uses ``self._layout_rng`` only (not global ``numpy.random``),
+        so external code cannot reset your cube pose between episodes.
+
+        - ``seed=None``: keep advancing ``_layout_rng`` (default between episodes).
+        - ``seed`` is an ``int``: replace ``_layout_rng`` with ``numpy.random.default_rng(seed)``
+          so **this** reset's layout is reproducible.
         '''
-        if seed != None: np.random.seed(seed=0) 
+        if seed is not None:
+            self._layout_rng = np.random.default_rng(int(seed))
         # Compute EE position from HOME_ARM_QPOS by forward kinematics.
         q_init = HOME_ARM_QPOS.copy()
         self.env.forward(q=q_init, joint_names=self.joint_names, increase_tick=False)
@@ -136,11 +208,36 @@ class MyEnv:
             z_range=[cz - CUBE_SAMPLE_DZ, cz + CUBE_SAMPLE_DZ],
             min_dist=0.2,
             xy_margin=0.0,
+            rng=self._layout_rng,
         )
+        cube_R_samples: list[np.ndarray] = []
         for obj_idx in range(n_obj):
-            self.env.set_p_base_body(body_name=obj_names[obj_idx],p=obj_xyzs[obj_idx,:])
-            self.env.set_R_base_body(body_name=obj_names[obj_idx],R=np.eye(3,3))
+            Ri = sample_cube_orientation_R(self._layout_rng)
+            cube_R_samples.append(Ri)
+            self.env.set_p_base_body(body_name=obj_names[obj_idx], p=obj_xyzs[obj_idx, :])
+            self.env.set_R_base_body(body_name=obj_names[obj_idx], R=Ri)
+
         self.env.forward(increase_tick=False)
+        # Set target platform position
+        tx,ty,tz=float(TARGET_SPAWN_XYZ[0]), float(TARGET_SPAWN_XYZ[1]), float(TARGET_SPAWN_XYZ[2])
+        target_xyzs= sample_xyzs(
+            n_sample=1,
+            x_range=[tx - TARGET_SAMPLE_DX, tx + TARGET_SAMPLE_DX],
+            y_range=[ty - TARGET_SAMPLE_DY, ty + TARGET_SAMPLE_DY],
+            z_range=[tz - TARGET_SAMPLE_DZ, tz + TARGET_SAMPLE_DZ],
+            min_dist=0.2,
+            xy_margin=0.0,
+            rng=self._layout_rng,
+        )
+        self.env.set_p_mocap(mocap_name='place_target_platform',p=target_xyzs[0,:])
+        self.env.set_R_mocap(mocap_name='place_target_platform',R=np.eye(3,3))
+        self._randomize_place_target_deck_size() # randomnize size
+
+        # Kinematic pose was written into qpos; stale qvel from the previous episode would
+        # keep integrating during mj_step (settle loop below) and wash out the new cube
+        # orientation. Zero entire velocity like standard MuJoCo resets.
+        self.env.data.qvel[:] = 0.0
+        mujoco.mj_forward(self.env.model, self.env.data)
 
         # Set the initial pose of the robot
         self.last_q = copy.deepcopy(q_zero)
@@ -150,6 +247,13 @@ class MyEnv:
         self.obj_init_pose = np.concatenate([mug_init_pose, plate_init_pose],dtype=np.float32)
         for _ in range(100):
             self.step_env()
+        # mj_step during settling integrates the free joint; implicit contacts can drive the
+        # cube quaternion back toward identity even when qvel was cleared. Re-apply the
+        # sampled rotations (positions stay as settled by physics), then clear velocity again.
+        for obj_idx in range(n_obj):
+            self.env.set_R_base_body(body_name=obj_names[obj_idx], R=cube_R_samples[obj_idx])
+        self.env.data.qvel[:] = 0.0
+        mujoco.mj_forward(self.env.model, self.env.data)
         print("DONE INITIALIZATION")
         self.gripper_close = True
         self.past_chars = []
@@ -240,8 +344,9 @@ class MyEnv:
         # self.env.plot_capsule(p=p_current, R=R_current, r=0.01, h=0.2, rgba=[0.05,0.95,0.05,0.5])
         # rgb_egocentric_view = add_title_to_img(self.rgb_ego,text='Egocentric View',shape=(640,480))
         rgb_agent_view = add_title_to_img(self.rgb_agent,text='Agent View',shape=(640,480))
-        
-        self.env.viewer_rgb_overlay(rgb_agent_view,loc='top right')
+        rgb_wrist_view = add_title_to_img(self.rgb_wrist, text="Wrist View", shape=(640, 480))
+        self.env.viewer_rgb_overlay(rgb_wrist_view, loc="top left")
+        self.env.viewer_rgb_overlay(rgb_agent_view, loc="top right")
         # self.env.viewer_rgb_overlay(rgb_egocentric_view,loc='bottom right')
         if teleop:
             # rgb_side_view = add_title_to_img(self.rgb_side,text='Side View',shape=(640,480))
@@ -249,6 +354,13 @@ class MyEnv:
             self.env.viewer_rgb_overlay(rgb_wrist_view, loc='top left')
             self.env.viewer_text_overlay(text1='Key Pressed',text2='%s'%(self.env.get_key_pressed_list()))
             self.env.viewer_text_overlay(text1='Key Repeated',text2='%s'%(self.env.get_key_repeated_list()))
+        origin = np.array([0, 0, 0])
+        x_axis = origin + np.array([0.1, 0, 0])
+        y_axis = origin + np.array([0, 0.1, 0])
+        z_axis = origin + np.array([0, 0, 0.1])
+        self.env.plot_line_fr2to(p_fr=origin, p_to=x_axis, rgba=[1, 0, 0, 1])
+        self.env.plot_line_fr2to(p_fr=origin, p_to=y_axis, rgba=[0, 1, 0, 1])
+        self.env.plot_line_fr2to(p_fr=origin, p_to=z_axis, rgba=[0, 0, 1, 1])
         self.env.render()
 
     def get_joint_state(self):
@@ -411,6 +523,23 @@ class MyEnv:
         self.env.set_R_base_body(body_name='place_target_platform',R=np.eye(3,3))
         self.step_env()
 
+    def _randomize_place_target_deck_size(self) -> None:
+        """
+        Randomize the target platform footprint/thickness by scaling geom place_target_deck half-sizes.
+        Uses geom_size (not mjBody.size) so collision mesh and rendering stay consistent.
+        """
+        model = self.env.model
+        data = self.env.data
+        gid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "place_target_deck")
+        if gid < 0:
+            return
+        scales = self._layout_rng.uniform(
+            PLACE_TARGET_DECK_SIZE_SCALE_LOW,
+            PLACE_TARGET_DECK_SIZE_SCALE_HIGH,
+            size=3,
+        )
+        model.geom_size[gid] = PLACE_TARGET_DECK_HALF_DEFAULT * scales
+        mujoco.mj_forward(model, data)
 
     def get_ee_pose(self):
         '''
@@ -420,6 +549,9 @@ class MyEnv:
         rpy = r2rpy(R) # note vla models 最常用，因为省token
         # quat= r2quat(R)
         ee = np.concatenate([p, rpy], dtype=np.float32)
+        gripper = self.env.get_qpos_joint('rh_r1')
+        gripper_close = 1.0 if gripper[0] > 0.1 else 0.0
+        ee = np.concatenate([ee, [gripper_close]], dtype=np.float32)
         return as_typed(ee, type="ee_pose")
 
     def get_obs_action(self):
@@ -430,7 +562,7 @@ class MyEnv:
             action: np.array, action
         '''
         if self.action_type == 'ee_pose':
-            obs_action = self.get_ee_pose()
+            obs_action = self.get_joint_state()
         elif self.action_type == 'qpos':
             obs_action = self.get_joint_state()
         elif self.action_type == 'delta_qpos':

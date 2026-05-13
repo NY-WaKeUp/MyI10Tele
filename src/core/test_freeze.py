@@ -6,7 +6,7 @@ from lerobot.datasets.lerobot_dataset import LeRobotDataset
 import os
 import shutil
 
-SEED = 0 
+SEED = None  # Use reset() without seed between episodes for varied layouts.
 REPO_NAME = 'auboI10'
 NUM_DEMO = 2
 ROOT = "/Users/ningyu/code_before_paper/MyI10Tele/data_test"
@@ -45,7 +45,7 @@ while PnPEnv.env.is_viewer_alive() and episode_id < NUM_DEMO:
             print(f"Episode {episode_id} done! Saving...")
             dataset.save_episode()
             print("Resetting Env")
-            PnPEnv.reset(seed = SEED)
+            PnPEnv.reset()
             episode_id += 1
             print(f"Current episode_id = {episode_id}")
             record_flag = False # Need to add this?
@@ -56,7 +56,7 @@ while PnPEnv.env.is_viewer_alive() and episode_id < NUM_DEMO:
             print("Start recording")
         if reset:
             print("Reset requested by user!")
-            PnPEnv.reset(seed=SEED)
+            PnPEnv.reset()
             dataset.clear_episode_buffer()
             record_flag = False
             

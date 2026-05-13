@@ -5,11 +5,19 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "dm-control>=1.0.40",
+    "glfw",
     "ipykernel>=7.2.0",
+    "lerobot",
     "matplotlib",
+    "mujoco",
+    "numpy",
     "opencv-python>=4.13.0.92",
     "pandas>=3.0.2",
-    "pynput>=1.8.1",
+    "pillow",
+    "plotly",
+    "pyautogui",
+    "scipy",
     "termcolor>=3.3.0",
+    "torch",
+    "trimesh",
 ]

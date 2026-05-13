@@ -424,6 +424,7 @@ class MuJoCoParserClass(object):
             maxgeom           = 50000,
             perturbation      = True,
             black_sky         = False,
+            shadow            = False,
             convex_hull       = None,
             n_fig             = 0,
             use_rgb_overlay   = False,
@@ -453,6 +454,7 @@ class MuJoCoParserClass(object):
             maxgeom (int): Maximum number of geometries.
             perturbation (bool): Whether to allow perturbation.
             black_sky (bool): Whether to render a black skybox.
+            shadow (bool): If False, disable object shadows (mjRND_SHADOW).
             convex_hull: Flag for convex hull visualization.
             n_fig (int): Number of figures for overlay plotting.
             use_rgb_overlay (bool): Whether to use an RGB overlay.
@@ -513,6 +515,7 @@ class MuJoCoParserClass(object):
             geomgroup_4   = geomgroup_4,
             geomgroup_5   = geomgroup_5,
             black_sky     = black_sky,
+            shadow        = shadow,
             convex_hull   = convex_hull,
             update        = update,
         )
@@ -542,6 +545,7 @@ class MuJoCoParserClass(object):
             geomgroup_4   = None,
             geomgroup_5   = None,
             black_sky     = None,
+            shadow        = None,
             convex_hull   = None,
             update        = False,
         ):
@@ -564,6 +568,7 @@ class MuJoCoParserClass(object):
             jointrgba (list): RGBA color for joints.
             geomgroup_0 ~ geomgroup_5: Visibility flags for geometry groups.
             black_sky (bool): Flag for enabling/disabling skybox.
+            shadow (bool): If not None, set object shadow rendering (mjRND_SHADOW).
             convex_hull (bool): Flag for convex hull visualization.
             update (bool): If True, perform an immediate update.
         
@@ -597,6 +602,9 @@ class MuJoCoParserClass(object):
         if geomgroup_5 is not None: self.viewer.vopt.geomgroup[5] = geomgroup_5
         # Skybox
         if black_sky is not None: self.viewer.scn.flags[mujoco.mjtRndFlag.mjRND_SKYBOX] = not black_sky
+        # Shadows (off by default via init_viewer shadow=False)
+        if shadow is not None:
+            self.viewer.scn.flags[mujoco.mjtRndFlag.mjRND_SHADOW] = 1 if shadow else 0
         # Convex hull
         if convex_hull is not None: self.viewer.vopt.flags[mujoco.mjtVisFlag.mjVIS_CONVEXHULL] = convex_hull
         # Render to update settings

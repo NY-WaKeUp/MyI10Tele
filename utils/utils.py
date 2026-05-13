@@ -91,16 +91,19 @@ def get_colors(n_color=10,cmap_name='gist_rainbow',alpha=1.0):
         colors[idx] = color
     return colors
 
-def sample_xyzs(n_sample=1,x_range=[0,1],y_range=[0,1],z_range=[0,1],min_dist=0.1,xy_margin=0.0):
+def sample_xyzs(n_sample=1,x_range=[0,1],y_range=[0,1],z_range=[0,1],min_dist=0.1,xy_margin=0.0,rng=None):
     """
         Sample a point in three dimensional space with the minimum distance between points
+
+        rng: optional ``numpy.random.Generator``; if None, uses the legacy global ``numpy.random``.
     """
+    rnd = np.random if rng is None else rng
     xyzs = np.zeros((n_sample,3))
     for p_idx in range(n_sample):
         while True:
-            x_rand = np.random.uniform(low=x_range[0]+xy_margin,high=x_range[1]-xy_margin)
-            y_rand = np.random.uniform(low=y_range[0]+xy_margin,high=y_range[1]-xy_margin)
-            z_rand = np.random.uniform(low=z_range[0],high=z_range[1])
+            x_rand = rnd.uniform(low=x_range[0]+xy_margin,high=x_range[1]-xy_margin)
+            y_rand = rnd.uniform(low=y_range[0]+xy_margin,high=y_range[1]-xy_margin)
+            z_rand = rnd.uniform(low=z_range[0],high=z_range[1])
             xyz = np.array([x_rand,y_rand,z_rand])
             if p_idx == 0: break
             devc = cdist(xyz.reshape((-1,3)),xyzs[:p_idx,:].reshape((-1,3)),'euclidean')
