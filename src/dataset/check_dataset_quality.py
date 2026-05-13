@@ -6,7 +6,9 @@ import pandas as pd
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Quality checks for collected VLA dataset.")
+    parser = argparse.ArgumentParser(
+        description="Quality checks for collected VLA dataset."
+    )
     parser.add_argument("--dataset-root", type=str, required=True)
     return parser.parse_args()
 
@@ -27,7 +29,15 @@ def main() -> None:
     ep = pd.read_parquet(episodes_path)
     info = json.loads(info_path.read_text(encoding="utf-8"))
 
-    required_cols = {"episode_index", "frame_index", "task_index", "task", "timestamp", "observation.state", "action"}
+    required_cols = {
+        "episode_index",
+        "frame_index",
+        "task_index",
+        "task",
+        "timestamp",
+        "observation.state",
+        "action",
+    }
     missing = required_cols - set(df.columns)
     if missing:
         raise ValueError(f"missing columns in data parquet: {sorted(missing)}")
