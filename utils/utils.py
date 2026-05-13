@@ -84,9 +84,7 @@ def get_idxs_contain(list_query, list_substring):
     """
     Get corresponding indices of either two lists
     """
-    idxs = [
-        i for i, s in enumerate(list_query) if any(sub in s for sub in list_substring)
-    ]
+    idxs = [i for i, s in enumerate(list_query) if any(sub in s for sub in list_substring)]
     return idxs
 
 
@@ -101,37 +99,20 @@ def get_colors(n_color=10, cmap_name="gist_rainbow", alpha=1.0):
     return colors
 
 
-def sample_xyzs(
-    n_sample=1,
-    x_range=[0, 1],
-    y_range=[0, 1],
-    z_range=[0, 1],
-    min_dist=0.1,
-    xy_margin=0.0,
-    rng=None,
-):
+def sample_xyzs(n_sample=1, x_range=[0, 1], y_range=[0, 1], z_range=[0, 1], min_dist=0.1, xy_margin=0.0):
     """
     Sample a point in three dimensional space with the minimum distance between points
-
-    rng: optional ``numpy.random.Generator``; if None, uses the legacy global ``numpy.random``.
     """
-    rnd = np.random if rng is None else rng
     xyzs = np.zeros((n_sample, 3))
     for p_idx in range(n_sample):
         while True:
-            x_rand = rnd.uniform(
-                low=x_range[0] + xy_margin, high=x_range[1] - xy_margin
-            )
-            y_rand = rnd.uniform(
-                low=y_range[0] + xy_margin, high=y_range[1] - xy_margin
-            )
-            z_rand = rnd.uniform(low=z_range[0], high=z_range[1])
+            x_rand = np.random.uniform(low=x_range[0] + xy_margin, high=x_range[1] - xy_margin)
+            y_rand = np.random.uniform(low=y_range[0] + xy_margin, high=y_range[1] - xy_margin)
+            z_rand = np.random.uniform(low=z_range[0], high=z_range[1])
             xyz = np.array([x_rand, y_rand, z_rand])
             if p_idx == 0:
                 break
-            devc = cdist(
-                xyz.reshape((-1, 3)), xyzs[:p_idx, :].reshape((-1, 3)), "euclidean"
-            )
+            devc = cdist(xyz.reshape((-1, 3)), xyzs[:p_idx, :].reshape((-1, 3)), "euclidean")
             if devc.min() > min_dist:
                 break  # minimum distance between objects
         xyzs[p_idx, :] = xyz
@@ -151,22 +132,13 @@ class ObjectSpawner:
     def spawn_objects(self):
         # --- Spawn the tray ---
         # Sample tray position using the provided sampling function.
-        tray_xyz = sample_xyzs(
-            n_sample=1,
-            x_range=[0.3, 0.7],
-            y_range=[-0.35, 0.35],
-            z_range=[0.82, 0.82],
-            min_dist=0.1,
-            xy_margin=0.00,
-        )[0]
+        tray_xyz = sample_xyzs(n_sample=1, x_range=[0.3, 0.7], y_range=[-0.35, 0.35], z_range=[0.82, 0.82], min_dist=0.1, xy_margin=0.00)[0]
         self.env.set_p_base_body(body_name="body_obj_tray_5", p=tray_xyz)
 
         # Randomly choose a tray orientation (and swap dimensions if rotated)
         if np.random.rand() > 0.5:
             # Rotate the tray by 90° about the z-axis
-            self.env.set_R_base_body(
-                body_name="body_obj_tray_5", R=rpy2r(np.deg2rad([0, 0, 90]))
-            )
+            self.env.set_R_base_body(body_name="body_obj_tray_5", R=rpy2r(np.deg2rad([0, 0, 90])))
 
         # --- Get object names to spawn (exclude the tray) ---
         obj_names = self.env.get_body_names(prefix="body_obj_")
@@ -188,13 +160,7 @@ class ObjectSpawner:
             y_range = [-0.35, 0.35]
 
             # Find a position that doesn't overlap with previously placed objects.
-            pos = self._get_non_colliding_position(
-                placed_positions=placed_positions,
-                x_range=x_range,
-                y_range=y_range,
-                min_dist=0.1,
-                tray_xyz=tray_xyz,  # Optionally avoid the tray's area if needed.
-            )
+            pos = self._get_non_colliding_position(placed_positions=placed_positions, x_range=x_range, y_range=y_range, min_dist=0.1, tray_xyz=tray_xyz)  # Optionally avoid the tray's area if needed.
             placed_positions.append(pos)
             # Set the object's position (using the same z as the tray for simplicity).
             self.env.set_p_base_body(body_name=name, p=[pos[0], pos[1], z])
@@ -203,16 +169,11 @@ class ObjectSpawner:
             angle = np.random.uniform(0, 360)
             self.env.set_R_base_body(body_name=name, R=rpy2r(np.deg2rad([0, 0, angle])))
 
-    def _get_non_colliding_position(
-        self, placed_positions, x_range, y_range, min_dist, tray_xyz
-    ):
+    def _get_non_colliding_position(self, placed_positions, x_range, y_range, min_dist, tray_xyz):
         """Attempts to sample a position that does not collide with already placed objects (or the tray).
-        Raises a ValueError if no valid position is found after a fixed number of attempts.
-        """
+        Raises a ValueError if no valid position is found after a fixed number of attempts."""
         max_attempts = 100
-        tray_margin = (
-            0.3  # Define a margin to avoid overlap with the tray center if needed.
-        )
+        tray_margin = 0.3  # Define a margin to avoid overlap with the tray center if needed.
         for attempt in range(max_attempts):
             x = np.random.uniform(x_range[0], x_range[1])
             y = np.random.uniform(y_range[0], y_range[1])
@@ -229,36 +190,30 @@ class ObjectSpawner:
                 collision = True
             if not collision:
                 return candidate
-        raise ValueError(
-            "Could not find a non-colliding position after {} attempts".format(
-                max_attempts
-            )
-        )
+        raise ValueError("Could not find a non-colliding position after {} attempts".format(max_attempts))
 
 
-def sample_xys(n_sample=1, x_range=[0, 1], y_range=[0, 1], min_dist=0.1, xy_margin=0.0):
+def sample_xyzs(n_sample=1, x_range=[0, 1], y_range=[0, 1], z_range=[0, 1], min_dist=0.1, xy_margin=0.0, rng=None):
     """
     Sample a point in three dimensional space with the minimum distance between points
+
+    rng: optional ``numpy.random.Generator``; if None, uses the legacy global ``numpy.random``.
     """
-    xys = np.zeros((n_sample, 2))
+    rnd = np.random if rng is None else rng
+    xyzs = np.zeros((n_sample, 3))
     for p_idx in range(n_sample):
         while True:
-            x_rand = np.random.uniform(
-                low=x_range[0] + xy_margin, high=x_range[1] - xy_margin
-            )
-            y_rand = np.random.uniform(
-                low=y_range[0] + xy_margin, high=y_range[1] - xy_margin
-            )
-            xy = np.array([x_rand, y_rand])
+            x_rand = rnd.uniform(low=x_range[0] + xy_margin, high=x_range[1] - xy_margin)
+            y_rand = rnd.uniform(low=y_range[0] + xy_margin, high=y_range[1] - xy_margin)
+            z_rand = rnd.uniform(low=z_range[0], high=z_range[1])
+            xyz = np.array([x_rand, y_rand, z_rand])
             if p_idx == 0:
                 break
-            devc = cdist(
-                xy.reshape((-1, 3)), xys[:p_idx, :].reshape((-1, 3)), "euclidean"
-            )
+            devc = cdist(xyz.reshape((-1, 3)), xyzs[:p_idx, :].reshape((-1, 3)), "euclidean")
             if devc.min() > min_dist:
                 break  # minimum distance between objects
-        xys[p_idx, :] = xy
-    return xys
+        xyzs[p_idx, :] = xyz
+    return xyzs
 
 
 def save_png(img, png_path, verbose=False):
@@ -349,9 +304,7 @@ def get_interp_const_vel_traj_nd(
     times_interp = np.linspace(0, times_anchor[-1], L_interp)  # [L_interp]
     anchors_interp = np.zeros((L_interp, D))  # [L_interp x D]
     for d_idx in range(D):  # for each dim
-        anchors_interp[:, d_idx] = np.interp(
-            times_interp, times_anchor, anchors[:, d_idx]
-        )
+        anchors_interp[:, d_idx] = np.interp(times_interp, times_anchor, anchors[:, d_idx])
     idxs_anchor = get_idxs_closest_ndarray(times_interp, times_anchor)
     return times_interp, anchors_interp, times_anchor, idxs_anchor
 
@@ -381,22 +334,11 @@ def check_vel_acc_jerk_nd(
 
     # Print
     if verbose:
-        print(
-            "Checking velocity, acceleration, and jerk of a L:[%d]xD:[%d] trajectory (factor:[%.2f])."
-            % (L, D, factor)
-        )
+        print("Checking velocity, acceleration, and jerk of a L:[%d]xD:[%d] trajectory (factor:[%.2f])." % (L, D, factor))
         for d_idx in range(D):
             print(
                 " dim:[%d/%d]: v_init:[%.2e] v_final:[%.2e] v_max:[%.2f] a_max:[%.2f] j_max:[%.2f]"
-                % (
-                    d_idx,
-                    D,
-                    factor * vel_inits[d_idx],
-                    factor * vel_finals[d_idx],
-                    factor * max_vels[d_idx],
-                    factor * max_accs[d_idx],
-                    factor * max_jerks[d_idx],
-                )
+                % (d_idx, D, factor * vel_inits[d_idx], factor * vel_finals[d_idx], factor * max_vels[d_idx], factor * max_accs[d_idx], factor * max_jerks[d_idx])
             )
 
     # Return
@@ -466,11 +408,7 @@ def depth_to_gray_img(depth, max_val=10.0):
     1-channel float-type depth image to 3-channel unit8-type gray image
     """
     depth_clip = np.clip(depth, a_min=0.0, a_max=max_val)  # float-type
-    img = np.tile(
-        255 * depth_clip[:, :, np.newaxis] / depth_clip.max(), (1, 1, 3)
-    ).astype(
-        np.uint8
-    )  # unit8-type
+    img = np.tile(255 * depth_clip[:, :, np.newaxis] / depth_clip.max(), (1, 1, 3)).astype(np.uint8)  # unit8-type
     return img
 
 
@@ -556,9 +494,7 @@ class TicTocClass(object):
                 self.cnt = cnt
             if (self.cnt % self.print_every) == 0:
                 if str is None:
-                    print(
-                        "%s Elapsed time:[%.2f]%s" % (self.name, time_show, time_unit)
-                    )
+                    print("%s Elapsed time:[%.2f]%s" % (self.name, time_show, time_unit))
                 else:
                     print("%s Elapsed time:[%.2f]%s" % (str, time_show, time_unit))
         self.cnt = self.cnt + 1
@@ -669,9 +605,7 @@ def rotation_matrix(angle, direction, point=None):
     cosa = math.cos(angle)
     direction = unit_vector(direction[:3])
     # rotation matrix around unit vector
-    R = np.array(
-        ((cosa, 0.0, 0.0), (0.0, cosa, 0.0), (0.0, 0.0, cosa)), dtype=np.float32
-    )
+    R = np.array(((cosa, 0.0, 0.0), (0.0, cosa, 0.0), (0.0, 0.0, cosa)), dtype=np.float32)
     R += np.outer(direction, direction) * (1.0 - cosa)
     direction *= sina
     R += np.array(
@@ -691,15 +625,7 @@ def rotation_matrix(angle, direction, point=None):
     return M
 
 
-def add_title_to_img(
-    img,
-    text="Title",
-    margin_top=30,
-    color=(0, 0, 0),
-    font_size=20,
-    resize=True,
-    shape=(300, 300),
-):
+def add_title_to_img(img, text="Title", margin_top=30, color=(0, 0, 0), font_size=20, resize=True, shape=(300, 300)):
     """
     Add title to image
     """
@@ -793,9 +719,7 @@ def get_dq_from_ik_info(
     Get delta q from augmented Jacobian method
     """
     J_list, ik_err_list = [], []
-    for ik_idx, (ik_body_name, ik_geom_name) in enumerate(
-        zip(ik_info["body_names"], ik_info["geom_names"])
-    ):
+    for ik_idx, (ik_body_name, ik_geom_name) in enumerate(zip(ik_info["body_names"], ik_info["geom_names"])):
         ik_p_trgt = ik_info["p_trgts"][ik_idx]
         ik_R_trgt = ik_info["R_trgts"][ik_idx]
         IK_P = ik_p_trgt is not None
@@ -836,9 +760,7 @@ def plot_ik_info(
     Plot IK information
     """
     colors = get_colors(cmap_name="gist_rainbow", n_color=ik_info["n_trgt"])
-    for ik_idx, (ik_body_name, ik_geom_name) in enumerate(
-        zip(ik_info["body_names"], ik_info["geom_names"])
-    ):
+    for ik_idx, (ik_body_name, ik_geom_name) in enumerate(zip(ik_info["body_names"], ik_info["geom_names"])):
         color = colors[ik_idx]
         ik_p_trgt = ik_info["p_trgts"][ik_idx]
         ik_R_trgt = ik_info["R_trgts"][ik_idx]
@@ -847,79 +769,29 @@ def plot_ik_info(
 
         if ik_body_name is not None:
             # Plot current
-            env.plot_body_T(
-                body_name=ik_body_name,
-                plot_axis=IK_R,
-                axis_len=axis_len,
-                axis_width=axis_width,
-                plot_sphere=IK_P,
-                sphere_r=sphere_r,
-                sphere_rgba=color,
-                label="",  # ''/ik_body_name
-            )
+            env.plot_body_T(body_name=ik_body_name, plot_axis=IK_R, axis_len=axis_len, axis_width=axis_width, plot_sphere=IK_P, sphere_r=sphere_r, sphere_rgba=color, label="")  # ''/ik_body_name
             # Plot target
             if IK_P:
                 env.plot_sphere(p=ik_p_trgt, r=sphere_r, rgba=color, label="")
-                env.plot_line_fr2to(
-                    p_fr=env.get_p_body(body_name=ik_body_name),
-                    p_to=ik_p_trgt,
-                    rgba=color,
-                )
+                env.plot_line_fr2to(p_fr=env.get_p_body(body_name=ik_body_name), p_to=ik_p_trgt, rgba=color)
             if IK_P and IK_R:
-                env.plot_T(
-                    p=ik_p_trgt,
-                    R=ik_R_trgt,
-                    plot_axis=True,
-                    axis_len=axis_len,
-                    axis_width=axis_width,
-                )
+                env.plot_T(p=ik_p_trgt, R=ik_R_trgt, plot_axis=True, axis_len=axis_len, axis_width=axis_width)
             if not IK_P and IK_R:  # rotation only
                 p_curr = env.get_p_body(body_name=ik_body_name)
-                env.plot_T(
-                    p=p_curr,
-                    R=ik_R_trgt,
-                    plot_axis=True,
-                    axis_len=axis_len,
-                    axis_width=axis_width,
-                )
+                env.plot_T(p=p_curr, R=ik_R_trgt, plot_axis=True, axis_len=axis_len, axis_width=axis_width)
 
         if ik_geom_name is not None:
             # Plot current
-            env.plot_geom_T(
-                geom_name=ik_geom_name,
-                plot_axis=IK_R,
-                axis_len=axis_len,
-                axis_width=axis_width,
-                plot_sphere=IK_P,
-                sphere_r=sphere_r,
-                sphere_rgba=color,
-                label="",  # ''/ik_geom_name
-            )
+            env.plot_geom_T(geom_name=ik_geom_name, plot_axis=IK_R, axis_len=axis_len, axis_width=axis_width, plot_sphere=IK_P, sphere_r=sphere_r, sphere_rgba=color, label="")  # ''/ik_geom_name
             # Plot target
             if IK_P:
                 env.plot_sphere(p=ik_p_trgt, r=sphere_r, rgba=color, label="")
-                env.plot_line_fr2to(
-                    p_fr=env.get_p_geom(geom_name=ik_geom_name),
-                    p_to=ik_p_trgt,
-                    rgba=color,
-                )
+                env.plot_line_fr2to(p_fr=env.get_p_geom(geom_name=ik_geom_name), p_to=ik_p_trgt, rgba=color)
             if IK_P and IK_R:
-                env.plot_T(
-                    p=ik_p_trgt,
-                    R=ik_R_trgt,
-                    plot_axis=True,
-                    axis_len=axis_len,
-                    axis_width=axis_width,
-                )
+                env.plot_T(p=ik_p_trgt, R=ik_R_trgt, plot_axis=True, axis_len=axis_len, axis_width=axis_width)
             if not IK_P and IK_R:  # rotation only
                 p_curr = env.get_p_geom(geom_name=ik_geom_name)
-                env.plot_T(
-                    p=p_curr,
-                    R=ik_R_trgt,
-                    plot_axis=True,
-                    axis_len=axis_len,
-                    axis_width=axis_width,
-                )
+                env.plot_T(p=p_curr, R=ik_R_trgt, plot_axis=True, axis_len=axis_len, axis_width=axis_width)
 
 
 def solve_ik(

@@ -38,6 +38,10 @@ wandb/
 lightning_logs/
 *.log
 
+# Local checkpoints / exports (large; never commit)
+**/.ckpt/
+*.safetensors
+
 # Large generated assets (teleop / dataset dumps — keeps Git UI under VS Code limits)
 data/images/
 data/videos/

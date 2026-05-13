@@ -1,4 +1,3 @@
-from .MyEnv import MyEnv
-from . import opencv_preview_worker
+from .my_env import MyEnv
 
-__all__ = ["MyEnv", "opencv_preview_worker"]
+__all__ = ["MyEnv"]
