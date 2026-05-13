@@ -98,7 +98,9 @@ def _rotation_align_vec_to_z(a: np.ndarray) -> np.ndarray:
         return np.eye(3, dtype=np.float64)
     if np.linalg.norm(n + e_z) < 1e-9:
         # 180° about x sends -z to +z
-        return np.array([[1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, -1.0]], dtype=np.float64)
+        return np.array(
+            [[1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, -1.0]], dtype=np.float64
+        )
     axis = np.cross(n, e_z)
     s = np.linalg.norm(axis)
     axis = axis / s
@@ -204,7 +206,11 @@ class MyEnv:
         # Set object positions
         obj_names = self.env.get_body_names(prefix="cube")
         n_obj = len(obj_names)
-        cx, cy, cz = float(CUBE_SPAWN_XYZ[0]), float(CUBE_SPAWN_XYZ[1]), float(CUBE_SPAWN_XYZ[2])
+        cx, cy, cz = (
+            float(CUBE_SPAWN_XYZ[0]),
+            float(CUBE_SPAWN_XYZ[1]),
+            float(CUBE_SPAWN_XYZ[2]),
+        )
         obj_xyzs = sample_xyzs(
             n_obj,
             x_range=[cx - CUBE_SAMPLE_DX, cx + CUBE_SAMPLE_DX],
@@ -218,12 +224,18 @@ class MyEnv:
         for obj_idx in range(n_obj):
             Ri = sample_cube_orientation_R(self._layout_rng)
             cube_R_samples.append(Ri)
-            self.env.set_p_base_body(body_name=obj_names[obj_idx], p=obj_xyzs[obj_idx, :])
+            self.env.set_p_base_body(
+                body_name=obj_names[obj_idx], p=obj_xyzs[obj_idx, :]
+            )
             self.env.set_R_base_body(body_name=obj_names[obj_idx], R=Ri)
 
         self.env.forward(increase_tick=False)
         # Set target platform position
-        tx, ty, tz = float(TARGET_SPAWN_XYZ[0]), float(TARGET_SPAWN_XYZ[1]), float(TARGET_SPAWN_XYZ[2])
+        tx, ty, tz = (
+            float(TARGET_SPAWN_XYZ[0]),
+            float(TARGET_SPAWN_XYZ[1]),
+            float(TARGET_SPAWN_XYZ[2]),
+        )
         target_xyzs = sample_xyzs(
             n_sample=1,
             x_range=[tx - TARGET_SAMPLE_DX, tx + TARGET_SAMPLE_DX],
@@ -248,14 +260,18 @@ class MyEnv:
         self.q = np.concatenate([q_zero, np.array([0.0], dtype=np.float64)])
         self.p0, self.R0 = self.env.get_pR_body(body_name="i10_inspire_flange_link")
         mug_init_pose, plate_init_pose = self.get_obj_pose()
-        self.obj_init_pose = np.concatenate([mug_init_pose, plate_init_pose], dtype=np.float32)
+        self.obj_init_pose = np.concatenate(
+            [mug_init_pose, plate_init_pose], dtype=np.float32
+        )
         for _ in range(100):
             self.step_env()
         # mj_step during settling integrates the free joint; implicit contacts can drive the
         # cube quaternion back toward identity even when qvel was cleared. Re-apply the
         # sampled rotations (positions stay as settled by physics), then clear velocity again.
         for obj_idx in range(n_obj):
-            self.env.set_R_base_body(body_name=obj_names[obj_idx], R=cube_R_samples[obj_idx])
+            self.env.set_R_base_body(
+                body_name=obj_names[obj_idx], R=cube_R_samples[obj_idx]
+            )
         self.env.data.qvel[:] = 0.0
         mujoco.mj_forward(self.env.model, self.env.data)
         print("DONE INITIALIZATION")
@@ -344,17 +360,27 @@ class MyEnv:
         # self.env.plot_sphere(p=p_current, r=0.02, rgba=[0.95,0.05,0.05,0.5])
         # self.env.plot_capsule(p=p_current, R=R_current, r=0.01, h=0.2, rgba=[0.05,0.95,0.05,0.5])
         # rgb_egocentric_view = add_title_to_img(self.rgb_ego,text='Egocentric View',shape=(640,480))
-        rgb_agent_view = add_title_to_img(self.rgb_agent, text="Agent View", shape=(640, 480))
-        rgb_wrist_view = add_title_to_img(self.rgb_wrist, text="Wrist View", shape=(640, 480))
+        rgb_agent_view = add_title_to_img(
+            self.rgb_agent, text="Agent View", shape=(640, 480)
+        )
+        rgb_wrist_view = add_title_to_img(
+            self.rgb_wrist, text="Wrist View", shape=(640, 480)
+        )
         self.env.viewer_rgb_overlay(rgb_wrist_view, loc="top left")
         self.env.viewer_rgb_overlay(rgb_agent_view, loc="top right")
         # self.env.viewer_rgb_overlay(rgb_egocentric_view,loc='bottom right')
         if teleop:
             # rgb_side_view = add_title_to_img(self.rgb_side,text='Side View',shape=(640,480))
-            rgb_wrist_view = add_title_to_img(self.rgb_wrist, text="Wrist View", shape=(640, 480))
+            rgb_wrist_view = add_title_to_img(
+                self.rgb_wrist, text="Wrist View", shape=(640, 480)
+            )
             self.env.viewer_rgb_overlay(rgb_wrist_view, loc="top left")
-            self.env.viewer_text_overlay(text1="Key Pressed", text2="%s" % (self.env.get_key_pressed_list()))
-            self.env.viewer_text_overlay(text1="Key Repeated", text2="%s" % (self.env.get_key_repeated_list()))
+            self.env.viewer_text_overlay(
+                text1="Key Pressed", text2="%s" % (self.env.get_key_pressed_list())
+            )
+            self.env.viewer_text_overlay(
+                text1="Key Repeated", text2="%s" % (self.env.get_key_repeated_list())
+            )
         origin = np.array([0, 0, 0])
         x_axis = origin + np.array([0.1, 0, 0])
         y_axis = origin + np.array([0, 0.1, 0])
@@ -451,7 +477,10 @@ class MyEnv:
             self.gripper_close = False
             print("Gripper open")
         drot = r2rpy(drot)
-        action = np.concatenate([dpos, drot, np.array([self.gripper_close], dtype=np.float32)], dtype=np.float32)
+        action = np.concatenate(
+            [dpos, drot, np.array([self.gripper_close], dtype=np.float32)],
+            dtype=np.float32,
+        )
         return action, False
 
     def get_delta_q(self):
@@ -474,9 +503,13 @@ class MyEnv:
         Tolerances come from geom place_target_deck sizes in myscene.xml.
         """
         model = self.env.model
-        deck_gid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "place_target_deck")
+        deck_gid = mujoco.mj_name2id(
+            model, mujoco.mjtObj.mjOBJ_GEOM, "place_target_deck"
+        )
         if deck_gid < 0:
-            raise RuntimeError("geom 'place_target_deck' not found (expected in myscene.xml)")
+            raise RuntimeError(
+                "geom 'place_target_deck' not found (expected in myscene.xml)"
+            )
         gs = np.asarray(model.geom_size[deck_gid], dtype=np.float64)
         place_deck_half_z = float(gs[2])
         place_tol_xy = float(0.75 * min(gs[0], gs[1]))

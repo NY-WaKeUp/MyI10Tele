@@ -24,7 +24,6 @@ class MyViewer(MyCallbacks):
         perturbation=True,
         use_rgb_overlay=True,
         loc_rgb_overlay="top right",
-        fontscale=None,
     ):
         super().__init__(hide_menus)
 
@@ -78,9 +77,9 @@ class MyViewer(MyCallbacks):
         self.scn = mujoco.MjvScene(self.model, maxgeom=self.maxgeom)
         self.pert = mujoco.MjvPerturb()
 
-        if fontscale is None:
-            fontscale = mujoco.mjtFontScale.mjFONTSCALE_150.value
-        self.ctx = mujoco.MjrContext(self.model, fontscale)
+        self.ctx = mujoco.MjrContext(
+            self.model, mujoco.mjtFontScale.mjFONTSCALE_150.value
+        )
 
         width, height = glfw.get_framebuffer_size(self.window)
 
