@@ -1,15 +1,15 @@
 {
     "codebase_version": "v3.0",
     "robot_type": "aubo_i10_inspire",
-    "total_episodes": 13,
-    "total_frames": 8316,
+    "total_episodes": 10,
+    "total_frames": 6224,
     "total_tasks": 1,
     "chunks_size": 1000,
     "data_files_size_in_mb": 100,
     "video_files_size_in_mb": 200,
     "fps": 20,
     "splits": {
-        "train": "0:13"
+        "train": "0:10"
     },
     "data_path": "data/chunk-{chunk_index:03d}/file-{file_index:03d}.parquet",
     "video_path": "videos/{video_key}/chunk-{chunk_index:03d}/file-{file_index:03d}.mp4",

@@ -2,157 +2,147 @@
 # -*- coding: utf-8 -*-
 
 import sys
-import random
-import numpy as np
 import os
-from PIL import Image
+import shutil
+import numpy as np
+import cv2
+
 from core.my_env import MyEnv
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
 
-# Layout randomness: keep SEED=None and call `reset()` with no args between episodes
-# so NumPy's RNG advances and cube pose / target position change each time.
-# Pass an int to my_env(..., seed=K) only when you need a reproducible *first* scene;
-# do not pass seed into every `reset()` during collection, or you repeat the same layout.
-
-
 REPO_NAME = "ningyv/auboI10"
-NUM_DEMO = 10  # Number of demonstrations to collect
-ROOT = "/Users/ningyu/code_before_paper/MyI10Tele/data"  # The root directory to save the demonstrations
-
-
-I10_path = "/Users/ningyu/code_before_paper/MyI10Tele/assets/aubo_i10_2/aubo_i10.xml"
-import mujoco
-
-model = mujoco.MjModel.from_xml_path(I10_path)
-print(model.body_pos)
-
+NUM_DEMO = 20
+# ROOT = "/Users/ningyu/code_before_paper/MyI10Tele/data_no_shadow"
+ROOT = "/Users/ningyu/code_before_paper/MyI10Tele/data_no_shadow_x264"
 
 TASK_NAME = "Put cube on the black platform"
-xml_path = "/Users/ningyu/code_before_paper/MyI10Tele/assets/aubo_i10_inspire/myscene.xml"
-# xml_path = './asset/example_scene_y_i10.xml'
-# Define the environment
-PnPEnv = MyEnv(xml_path, seed=42)
-print(f"action_type: {PnPEnv.action_type}")
-print(f"state_type: {PnPEnv.state_type}")
+XML_PATH = (
+    "/Users/ningyu/code_before_paper/MyI10Tele/assets/aubo_i10_inspire/myscene.xml"
+)
 
 
-create_new = True
-if os.path.exists(ROOT):
-    print(f"Directory {ROOT} already exists.")
-    ans = input("Do you want to delete it? (y/n) ")
-    if ans == "y":
-        import shutil
+def main() -> None:
+    # macOS spawn + GLFW: subprocess image writers re-import this file; keep processes off.
+    image_writer_processes = 0 if sys.platform == "darwin" else 5
 
-        shutil.rmtree(ROOT)
+    pn_env = MyEnv(XML_PATH, seed=42)
+    print(f"action_type: {pn_env.action_type}")
+    print(f"state_type: {pn_env.state_type}")
+
+    create_new = True
+    if os.path.exists(ROOT):
+        print(f"Directory {ROOT} already exists.")
+        ans = input("Do you want to delete it? (y/n) ")
+        if ans == "y":
+            shutil.rmtree(ROOT)
+        else:
+            create_new = False
+
+    if create_new:
+        dataset = LeRobotDataset.create(
+            repo_id=REPO_NAME,
+            root=ROOT,
+            robot_type="aubo_i10_inspire",
+            fps=20,
+            features={
+                "observation.image": {
+                    "dtype": "video",
+                    "shape": (256, 256, 3),
+                    "names": ["height", "width", "channels"],
+                    # 增加 info 字段，强制使用 h264
+                    "info": {
+                        "video.codec": "libx264",  # 或者使用 Mac 硬件加速 "h264_videotoolbox"
+                        "video.crf": 18,  # 控制视频质量，越低质量越好但文件越大
+                    },
+                },
+                "observation.wrist_image": {
+                    "dtype": "video",
+                    "shape": (256, 256, 3),
+                    "names": ["height", "width", "channel"],
+                    # 同样应用到手腕相机
+                    "info": {
+                        "video.codec": "libx264",
+                        "video.crf": 18,
+                    },
+                },
+                "observation.state": {
+                    "dtype": "float32",
+                    "shape": (7,),
+                    "names": ["state"],
+                },
+                "action": {
+                    "dtype": "float32",
+                    "shape": (7,),
+                    "names": ["action"],
+                },
+                "obj_init": {
+                    "dtype": "float32",
+                    "shape": (6,),
+                    "names": ["obj_init"],
+                },
+            },
+            image_writer_threads=10,
+            image_writer_processes=image_writer_processes,
+        )
     else:
-        create_new = False
+        print("Load from previous dataset")
+        dataset = LeRobotDataset(REPO_NAME, root=ROOT)
 
-
-if create_new:
-    dataset = LeRobotDataset.create(
-        repo_id=REPO_NAME,
-        root=ROOT,
-        robot_type="aubo_i10_inspire",
-        fps=20,  # 20 frames per second
-        features={
-            "observation.image": {
-                "dtype": "video",
-                "shape": (256, 256, 3),
-                "names": ["height", "width", "channels"],
-            },
-            "observation.wrist_image": {
-                "dtype": "video",
-                "shape": (256, 256, 3),
-                "names": ["height", "width", "channel"],
-            },
-            "observation.state": {
-                "dtype": "float32",
-                # "shape": (7 if PnPEnv.state_type == 'qpos' else 6,),
-                "shape": (7,),
-                "names": ["state"],  # 6 joint angles and 1 gripper ////  x, y, z, roll, pitch, yaw
-            },
-            "action": {
-                "dtype": "float32",
-                # "shape": (6 if PnPEnv.action_type == 'ee_pose' else 7,),
-                "shape": (7,),
-                "names": ["action"],  # x, y, z, roll, pitch, yaw /// 6 joint angles and 1 gripper
-            },
-            "obj_init": {
-                "dtype": "float32",
-                "shape": (6,),
-                "names": ["obj_init"],  # just the initial position of the object. Not used in training.
-            },
-        },
-        image_writer_threads=10,
-        image_writer_processes=5,
-    )
-else:
-    print("Load from previous dataset")
-    dataset = LeRobotDataset(REPO_NAME, root=ROOT)
-
-
-action = np.zeros(7)
-episode_id = 0
-record_flag = False  # Start recording when the robot starts moving
-while PnPEnv.env.is_viewer_alive() and episode_id < NUM_DEMO:
-    PnPEnv.step_env()
-    if PnPEnv.env.loop_every(HZ=20):
-        # check if the episode is done
-        done = PnPEnv.check_success()
-        if done:
-            # Save the episode data and reset the environment
-            dataset.save_episode()
-            PnPEnv.reset()
-            episode_id += 1
-            record_flag = False
-        # Teleoperate the robot and get delta end-effector pose with gripper
-        action, reset = PnPEnv.teleop_robot()
-        if not record_flag and sum(action) != 0:
-            record_flag = True
-            print("Start recording")
-        if reset:
-            # Reset the environment and clear the episode buffer
-            # This can be done by pressing 'z' key
-            PnPEnv.reset()
-            dataset.clear_episode_buffer()
-            record_flag = False
-        # Step the environment
-        # Get the end-effector pose and images
-        # obs_action = PnPEnv.get_ee_pose()
-        obs_action = PnPEnv.get_obs_action()
-        # assert obs_action.type == PnPEnv.action_type , print(f"expect action_type: {PnPEnv.action_type}, but got {obs_action.type}")
-        assert obs_action.type == "qpos"
-        agent_image, wrist_image = PnPEnv.grab_image()
-        # # resize to 256x256
-        agent_image = Image.fromarray(agent_image)
-        wrist_image = Image.fromarray(wrist_image)
-        agent_image = agent_image.resize((256, 256))
-        wrist_image = wrist_image.resize((256, 256))
-        agent_image = np.array(agent_image)
-        wrist_image = np.array(wrist_image)
-        obs_state = PnPEnv.step(action)
-
-        # from IPython.display import display, clear_output
-        # clear_output(wait=True)
-        # print(f"gripper_qpos: {PnPEnv.env.get_qpos_joint('rh_r1')}") # close : 0.81454458 open :2.7e-6
-        # print(f"gripper_qpos: {PnPEnv.env.get_qpos_joint('rh_r1')[0]}")
-
-        assert obs_state.type == PnPEnv.state_type, f"expect state_type: {PnPEnv.state_type}, but got {obs_state.type}"
-        if record_flag:
-            # Add the frame to the dataset
-            dataset.add_frame(
-                {
-                    "observation.image": agent_image,
-                    "observation.wrist_image": wrist_image,
-                    "observation.state": obs_state,
-                    "action": obs_action,
-                    "obj_init": PnPEnv.obj_init_pose,
-                    "task": TASK_NAME,
-                }
+    action = np.zeros(7)
+    episode_id = 0
+    record_flag = False
+    while pn_env.env.is_viewer_alive() and episode_id < NUM_DEMO:
+        pn_env.step_env()
+        if pn_env.env.loop_every(HZ=20):
+            done = pn_env.check_success()
+            if done:
+                dataset.save_episode()
+                pn_env.reset()
+                episode_id += 1
+                record_flag = False
+            action, reset = pn_env.teleop_robot()
+            if not record_flag and np.any(action != 0):
+                record_flag = True
+                print("Start recording")
+            if reset:
+                pn_env.reset()
+                # Loaded datasets keep episode_buffer=None until first add_frame; clear_episode_buffer would crash.
+                buf = getattr(dataset, "episode_buffer", None)
+                if buf is not None:
+                    dataset.clear_episode_buffer()
+                record_flag = False
+                continue
+            obs_action = pn_env.get_obs_action()
+            assert obs_action.type == "qpos"
+            agent_image, wrist_image = pn_env.grab_image()
+            agent_image = cv2.resize(
+                agent_image, (256, 256), interpolation=cv2.INTER_AREA
             )
-            print(PnPEnv.obj_init_pose)
-        PnPEnv.render(teleop=True)
-PnPEnv.env.close_viewer()
-dataset.stop_image_writer()
-dataset.finalize()
+            wrist_image = cv2.resize(
+                wrist_image, (256, 256), interpolation=cv2.INTER_AREA
+            )
+            obs_state = pn_env.step(action)
+            assert (
+                obs_state.type == pn_env.state_type
+            ), f"expect state_type: {pn_env.state_type}, but got {obs_state.type}"
+            if record_flag:
+                dataset.add_frame(
+                    {
+                        "observation.image": agent_image,
+                        "observation.wrist_image": wrist_image,
+                        "observation.state": obs_state,
+                        "action": obs_action,
+                        "obj_init": pn_env.obj_init_pose,
+                        "task": TASK_NAME,
+                    }
+                )
+            pn_env.render(teleop=True)
+
+    pn_env.env.close_viewer()
+    dataset.stop_image_writer()
+    dataset.finalize()
+
+
+if __name__ == "__main__":
+    main()

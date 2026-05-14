@@ -13,17 +13,25 @@ from lerobot.policies.act.configuration_act import ACTConfig
 from lerobot.datasets.factory import resolve_delta_timestamps
 
 from core.my_policy import MyPolicy
+from dist.dist import AddGaussianNoise
 
 from torchvision import transforms
+
+import os
+
+os.environ["DISPLAY"] = ":11.0"
 
 MyPolicy.set_visible_cuda_devices("1")
 device = torch.device("cuda:0")
 
 DATASET_REPO = "auboI10"
-DATASET_ROOT = "/home/ningyu/MyI10Tele/data2/"
+DATASET_NAME = "data_w_shadow_x264"
+DATASET_ROOT = f"/home/ningyu/MyI10Tele/{DATASET_NAME}/"
 
 dataset_metadata = LeRobotDatasetMetadata(DATASET_REPO, root=DATASET_ROOT)
-input_features, output_features = MyPolicy.input_output_features_from_metadata(dataset_metadata)
+input_features, output_features = MyPolicy.input_output_features_from_metadata(
+    dataset_metadata
+)
 
 # --- 初始化 ACT 模型 ---
 is_finetuning = False
@@ -56,6 +64,7 @@ else:
         n_action_steps=1,
         temporal_ensemble_coeff=0.9,
         dropout=0.1,
+        device=str(device),
     )
     # This allows us to construct the data with action chunking
     # We can now instantiate our policy with this config and the dataset stats.
@@ -67,25 +76,7 @@ policy.train()
 policy.to(device)
 
 
-class AddGaussianNoise(object):
-    """
-    Adds Gaussian noise to a tensor.
-    """
-
-    def __init__(self, mean=0.0, std=0.01):
-        self.mean = mean
-        self.std = std
-
-    def __call__(self, tensor):
-        # Adds noise: tensor remains a tensor.
-        noise = torch.randn(tensor.size()) * self.std + self.mean
-        return tensor + noise
-
-    def __repr__(self):
-        return f"{self.__class__.__name__}(mean={self.mean}, std={self.std})"
-
-
-# Create a transformation pipeline that converts a PIL image to a tensor, then adds noise.
+# note Create a transformation pipeline that converts a PIL image to a tensor, then adds noise.
 transform = transforms.Compose(
     [
         AddGaussianNoise(mean=0.0, std=0.01),
@@ -121,10 +112,10 @@ dataloader = torch.utils.data.DataLoader(
 best_loss = float("inf")
 # Number of offline training steps (we'll only do offline training for this example.)
 # Adjust as you prefer. 5000 steps are needed to get something worth evaluating.
-training_steps = 5000
+training_steps = 100
 log_freq = 100
 # save_dir = '.ckpt/auboI10_act_w_2_view_temporal_ensemble_coeff09'
-save_dir = ".ckpt/auboI10_act_w_2_view"
+save_dir = f".ckpt/{DATASET_NAME}"
 
 # One bar for the whole run (updates in place). Avoids Jupyter stacking many tqdm widgets.
 _total_batches = training_steps * len(dataloader)
@@ -145,7 +136,9 @@ for epoch in range(training_steps):
 
         epoch_loss += loss.item()
         pbar.update(1)
-        pbar.set_postfix(epoch=f"{epoch + 1}/{training_steps}", Loss=f"{loss.item():.4f}")
+        pbar.set_postfix(
+            epoch=f"{epoch + 1}/{training_steps}", Loss=f"{loss.item():.4f}"
+        )
 
     avg_loss = epoch_loss / len(dataloader)
     if (epoch + 1) % log_freq == 0 or epoch == training_steps - 1:

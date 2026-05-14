@@ -23,5 +23,6 @@ dependencies = [
     "termcolor>=3.3.0",
     "torch",
     "torchcodec>=0.10.0",
+    "transformers @ git+https://github.com/huggingface/transformers.git@dcddb970176382c0fcf4521b0c0e6fc15894dfe0",
     "trimesh",
 ]
