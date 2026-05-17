@@ -1,9 +1,0 @@
-# Treat mesh and weights as binary so merge does not run text/whitespace rules on huge line-based files.
-*.obj binary
-*.STL binary
-*.stl binary
-*.safetensors binary
-*.bin binary
-*.png binary
-*.jpg binary
-*.jpeg binary

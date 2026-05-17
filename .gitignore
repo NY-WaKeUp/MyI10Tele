@@ -43,13 +43,8 @@ lightning_logs/
 *.safetensors
 
 # Large generated assets (teleop / dataset dumps — keeps Git UI under VS Code limits)
-data/images/
-data/videos/
-data/chunk-*/
-data/**/*.parquet
-
-# Second dataset root (same policy as data/)
-data2/images/
-data2/videos/
-data2/chunk-*/
-data2/**/*.parquet
+data*/
+core/lerobot/
+core/openvla-7b
+core/openvla-7b-finetuned-libero-spatial
+core/physical-intelligence
