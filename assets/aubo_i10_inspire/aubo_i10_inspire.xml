@@ -131,7 +131,7 @@
                         <!-- Housing behind lens (+Z); visual only, no collision. -->
                         <geom name="wrist_cam_housing" type="box" size="0.018 0.012 0.022" pos="0 0 0.018" rgba="0.18 0.18 0.2 0" contype="0" conaffinity="0" group="1"/>
                         <!-- Camera pos: ~8 mm along optical axis (into scene) to reduce near-plane clipping; fovy unchanged. -->
-                        <camera name="wrist_cam" pos="0.004541864 0 0.006585704" xyaxes="0 -1 0  -0.823213 0 0.567733" fovy="190" />
+                        <camera name="wrist_cam" pos="0.004541864 0 0.006585704" xyaxes="0 -1 0  -0.823213 0 0.567733" fovy="130" />
                       </body>
                       <body name="gripper_Link1" pos="0 -0.04 0.09" quat="0.9076481 0.419732 0 0">
                         <joint name="rh_r1" class="gripper" range="0 0.8663"/>

@@ -14,7 +14,8 @@ from lerobot.datasets.lerobot_dataset import LeRobotDataset
 REPO_NAME = "ningyv/auboI10"
 NUM_DEMO = 40
 # ROOT = "/Users/ningyu/code_before_paper/MyI10Tele/data_w_shadow_x264"
-ROOT = "/Users/ningyu/code_before_paper/MyI10Tele/data_w_shadow_h264_znear0001"
+# ROOT = "/Users/ningyu/code_before_paper/MyI10Tele/data_w_shadow_h264_znear0001"
+ROOT = "/Users/ningyu/code_before_paper/MyI10Tele/data_w_shadow_h264_znear0001_fov179"
 
 TASK_NAME = "Put cube on the black platform"
 XML_PATH = (
