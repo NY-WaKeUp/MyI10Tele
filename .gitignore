@@ -44,7 +44,7 @@ lightning_logs/
 
 # Large generated assets (teleop / dataset dumps — keeps Git UI under VS Code limits)
 data*/
-core/lerobot/
-core/openvla-7b/
-core/openvla-7b-finetuned-libero-spatial/
-core/physical-intelligence/
+src/core/lerobot/
+src/core/openvla-7b/
+src/core/openvla-7b-finetuned-libero-spatial/
+src/core/physical-intelligence/
