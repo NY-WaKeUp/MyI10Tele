@@ -73,6 +73,7 @@
 
   <worldbody>
     <light pos="0 -1.5 1.5" dir="-0.1 1 -1" directional="true"/>
+    <light pos="0 -1.5 1.5" dir="-0.1 1 -1" directional="true"/>
     <geom name="floor" size="0 0 0.05" type="plane" material="groundplane"/>
     <body name="base_link" pos="0 0 0">
       <inertial pos="0.000136 0.001601 0.018986" mass="2.592" fullinertia="0.008524 0.007934 0.015304 -0.000001 -0.000005 -0.000081"/>
