@@ -39,7 +39,7 @@ _allow_hub_tokenizer = False
 
 # Reduce allocator fragmentation (helps when compile / cudagraphs reserve pools).
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
-PI0_NUM_EPOCHS = 25
+PI0_NUM_EPOCHS = 250
 import torch
 from tqdm.auto import tqdm
 from transformers import AutoTokenizer
@@ -62,7 +62,7 @@ from lerobot.rl.wandb_utils import get_safe_wandb_artifact_name
 from huggingface_hub.constants import SAFETENSORS_SINGLE_FILE
 
 MyPolicy.set_visible_cuda_devices("0")
-device = torch.device("cuda:0")
+device = torch.device("cuda")
 
 # torch.compile + activation checkpointing: AOT partitioner's functionalize_rng_ops walks joint-graph
 # nodes marked MUST_RECOMPUTE that carry RNG (nondeterministic_seeded), e.g. flash SDPA internals.
@@ -117,6 +117,7 @@ if is_finetuning:
         compile_model=COMPILE_PI0_MODEL,
         compile_mode=PI0_COMPILE_MODE if COMPILE_PI0_MODEL else "default",
         dtype="bfloat16",
+        use_amp=True,
         gradient_checkpointing=USE_GRADIENT_CHECKPOINTING,
         train_expert_only=True,
         chunk_size=100,
@@ -152,6 +153,7 @@ else:
         n_action_steps=50,
         dtype="bfloat16",
         gradient_checkpointing=True,
+        use_amp=True,
         device=str(device),
     )
     policy = PI0Policy(cfg, dataset_stats=dataset_metadata.stats)

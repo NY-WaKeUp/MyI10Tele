@@ -1,4 +1,0 @@
-{
-    "specstory.cloudSync.enabled": "always",
-    "python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python"
-}

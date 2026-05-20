@@ -132,7 +132,7 @@ print(
 best_loss = float("inf")
 # Number of offline training steps (we'll only do offline training for this example.)
 # Adjust as you prefer. 5000 steps are needed to get something worth evaluating.
-training_steps = 100
+training_steps = 1000
 log_freq = 100
 # save_dir = '.ckpt/auboI10_act_w_2_view_temporal_ensemble_coeff09'
 save_dir = f".ckpt/{pretrained_model_id.split('/')[-1]}/{DATASET_NAME}"
