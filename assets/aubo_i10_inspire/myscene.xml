@@ -1,4 +1,8 @@
 <mujoco model="myscene">
+    <visual>
+        <!-- 在这里统一设置全局相机的近裁剪面 -->
+        <map znear="0.001" zfar="5.0"/>
+    </visual>
     <size memory="500M"/>
     <!-- Finger mesh vs box: small dt + high iterations + margins on geoms reduce tunneling. -->
     <option timestep="0.0005" integrator="implicitfast" iterations="400" tolerance="1e-9"

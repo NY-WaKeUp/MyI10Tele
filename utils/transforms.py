@@ -142,8 +142,8 @@ def pr2t(p, R):
 
 
 def r2w(R):
-    """
-    R to \omega
+    r"""
+    Map rotation matrix R to axis-angle vector (ω).
     """
     el = np.array([[R[2, 1] - R[1, 2]], [R[0, 2] - R[2, 0]], [R[1, 0] - R[0, 1]]])
     norm_el = np.linalg.norm(el)

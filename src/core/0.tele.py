@@ -13,8 +13,7 @@ from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
 REPO_NAME = "ningyv/auboI10"
 NUM_DEMO = 20
-# ROOT = "/Users/ningyu/code_before_paper/MyI10Tele/data_no_shadow"
-ROOT = "/Users/ningyu/code_before_paper/MyI10Tele/data_no_shadow_x264"
+ROOT = "/Users/ningyu/code_before_paper/MyI10Tele/data_w_shadow_x264"
 
 TASK_NAME = "Put cube on the black platform"
 XML_PATH = (
@@ -39,32 +38,28 @@ def main() -> None:
         else:
             create_new = False
 
+    # Streaming encode during capture -> save_episode avoids PNG->AV1 batch. "auto" picks VideoToolbox on macOS.
+    _vcodec = "auto" if sys.platform == "darwin" else "h264"
+
     if create_new:
         dataset = LeRobotDataset.create(
             repo_id=REPO_NAME,
             root=ROOT,
             robot_type="aubo_i10_inspire",
             fps=20,
+            vcodec=_vcodec,
+            streaming_encoding=True,
+            encoder_queue_maxsize=90,
             features={
                 "observation.image": {
                     "dtype": "video",
                     "shape": (256, 256, 3),
                     "names": ["height", "width", "channels"],
-                    # 增加 info 字段，强制使用 h264
-                    "info": {
-                        "video.codec": "libx264",  # 或者使用 Mac 硬件加速 "h264_videotoolbox"
-                        "video.crf": 18,  # 控制视频质量，越低质量越好但文件越大
-                    },
                 },
                 "observation.wrist_image": {
                     "dtype": "video",
                     "shape": (256, 256, 3),
                     "names": ["height", "width", "channel"],
-                    # 同样应用到手腕相机
-                    "info": {
-                        "video.codec": "libx264",
-                        "video.crf": 18,
-                    },
                 },
                 "observation.state": {
                     "dtype": "float32",
@@ -82,7 +77,7 @@ def main() -> None:
                     "names": ["obj_init"],
                 },
             },
-            image_writer_threads=10,
+            image_writer_threads=6,
             image_writer_processes=image_writer_processes,
         )
     else:
@@ -97,7 +92,8 @@ def main() -> None:
         if pn_env.env.loop_every(HZ=20):
             done = pn_env.check_success()
             if done:
-                dataset.save_episode()
+                # macOS: avoid ProcessPoolExecutor in save_episode (spawn + GLFW); streaming path is already fast.
+                dataset.save_episode(parallel_encoding=sys.platform != "darwin")
                 pn_env.reset()
                 episode_id += 1
                 record_flag = False

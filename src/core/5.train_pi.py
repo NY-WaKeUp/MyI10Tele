@@ -33,19 +33,13 @@ from pathlib import Path
 _hf_root = Path.home() / ".cache" / "huggingface"
 os.environ.setdefault("HF_HOME", str(_hf_root))
 os.environ.setdefault("HF_HUB_CACHE", str(_hf_root / "hub"))
-_allow_hub = os.environ.get("PI0_ALLOW_HUB_DOWNLOAD", "").lower() in (
-    "1",
-    "true",
-    "yes",
-)
-_allow_hub_tokenizer = os.environ.get(
-    "PI0_TOKENIZER_ALLOW_HUB_DOWNLOAD", ""
-).lower() in ("1", "true", "yes")
+_allow_hub = False
+_allow_hub_tokenizer = False
+
 
 # Reduce allocator fragmentation (helps when compile / cudagraphs reserve pools).
-if "PYTORCH_CUDA_ALLOC_CONF" not in os.environ:
-    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
-PI0_NUM_EPOCHS = int(os.environ.get("PI0_NUM_EPOCHS", "25"))
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+PI0_NUM_EPOCHS = 25
 import torch
 from tqdm.auto import tqdm
 from transformers import AutoTokenizer
@@ -63,6 +57,9 @@ from core.my_policy import (
     resolve_paligemma_tokenizer_path,
     resolve_pi0_pretrained_path,
 )
+import wandb
+from lerobot.rl.wandb_utils import get_safe_wandb_artifact_name
+from huggingface_hub.constants import SAFETENSORS_SINGLE_FILE
 
 MyPolicy.set_visible_cuda_devices("0")
 device = torch.device("cuda:0")
@@ -78,20 +75,22 @@ USE_GRADIENT_CHECKPOINTING = not COMPILE_PI0_MODEL
 # torch.compile: "max-autotune" enables CUDA Graphs (faster steady-state, risk of overwrite errors).
 # Default is max-autotune-no-cudagraphs (stable). Enable graphs: PI0_CUDAGRAPHS=1 or PI0_COMPILE_MODE=max-autotune
 # (each micro-batch calls torch.compiler.cudagraph_mark_step_begin() to play nice with grad accumulation).
-_default_compile = "max-autotune-no-cudagraphs"
-if os.environ.get("PI0_CUDAGRAPHS", "").lower() in ("1", "true", "yes"):
-    _default_compile = "max-autotune"
-PI0_COMPILE_MODE = os.environ.get("PI0_COMPILE_MODE", _default_compile)
+PI0_COMPILE_MODE = "max-autotune-no-cudagraphs"
 
 # VRAM: micro-batch per forward/backward; gradient accumulation matches previous 64 effective batch.
 # Tune PI0_BATCH_SIZE / PI0_GRAD_ACCUM if OOM persists (e.g. 4 and 16).
-PER_DEVICE_BATCH_SIZE = int(os.environ.get("PI0_BATCH_SIZE", "16"))
-GRADIENT_ACCUMULATION_STEPS = int(os.environ.get("PI0_GRAD_ACCUM", "4"))
+PER_DEVICE_BATCH_SIZE = 16
+GRADIENT_ACCUMULATION_STEPS = 4
 
 DATASET_REPO = "auboI10"
 # DATASET_ROOT = "/home/ningyu/MyI10Tele/data2/"
-DATASET_NAME = "data_w_shadow_x264"
+# DATASET_NAME = "data_w_shadow_x264"
+DATASET_NAME = "data_w_shadow_h264_znear0001"
+DATASET_NAME = "aloha_sim_transfer_cube_human"
 DATASET_ROOT = f"/home/ningyu/MyI10Tele/{DATASET_NAME}/"
+DATASET_ROOT = os.path.expanduser(
+    f"~/openpi-cache/huggingface/lerobot/lerobot/{DATASET_NAME}"
+)
 
 dataset_metadata = LeRobotDatasetMetadata(DATASET_REPO, root=DATASET_ROOT)
 input_features, output_features = MyPolicy.input_output_features_from_metadata(
@@ -120,6 +119,8 @@ if is_finetuning:
         dtype="bfloat16",
         gradient_checkpointing=USE_GRADIENT_CHECKPOINTING,
         train_expert_only=True,
+        chunk_size=100,
+        n_action_steps=1,
         # PreTrainedConfig must stay JSON/YAML-serializable (draccus); use str not torch.device.
         device=str(device),
     )
@@ -223,7 +224,25 @@ optimizer = torch.optim.AdamW(
 # so totals and it/s are comparable to DataLoader batch_size runs without grad accum.
 best_loss = float("inf")
 log_freq = 50
-save_dir = f".ckpt/{DATASET_NAME}"
+save_dir = f".ckpt/{pretrained_model_id.split('/')[-1]}/{DATASET_NAME}"
+# --- WandB init (optional via env) ---
+WANDB_PROJECT = os.environ.get("WANDB_PROJECT", "aubo-i10-fintune")
+WANDB_ENTITY = os.environ.get("WANDB_ENTITY", "phil_ning")
+WANDB_MODE = os.environ.get("WANDB_MODE", None)  # online/offline/disabled
+_global_step = 0
+wandb.init(
+    project=WANDB_PROJECT,
+    entity=WANDB_ENTITY,
+    dir=save_dir,
+    config={
+        "batch_size": PER_DEVICE_BATCH_SIZE,
+        "grad_accum": GRADIENT_ACCUMULATION_STEPS,
+        "epochs": PI0_NUM_EPOCHS,
+    },
+    resume="allow",
+    mode=WANDB_MODE,
+)
+print(f"WandB initialized: {wandb.run.get_url()}")
 
 _dl_len = len(dataloader)
 _steps_per_epoch = _dl_len // GRADIENT_ACCUMULATION_STEPS + (
@@ -269,6 +288,11 @@ for epoch in range(PI0_NUM_EPOCHS):
                 policy.parameters(), max_norm=cfg.optimizer_grad_clip_norm
             )
             optimizer.step()
+            _global_step += 1
+            wandb.log(
+                {"train/loss": loss.item(), "train/epoch": epoch + 1},
+                step=_global_step,
+            )
             optimizer.zero_grad(set_to_none=True)
             accum_step = 0
             pbar.update(1)
@@ -283,6 +307,14 @@ for epoch in range(PI0_NUM_EPOCHS):
             policy.parameters(), max_norm=cfg.optimizer_grad_clip_norm
         )
         optimizer.step()
+        _global_step += 1
+        wandb.log(
+            {
+                "train/epoch_loss": epoch_loss / len(dataloader),
+                "train/epoch": epoch + 1,
+            },
+            step=_global_step,
+        )
         optimizer.zero_grad(set_to_none=True)
         pbar.update(1)
 
@@ -293,6 +325,7 @@ for epoch in range(PI0_NUM_EPOCHS):
     if avg_loss < best_loss:
         best_loss = avg_loss
         policy.save_pretrained(save_dir)
+        # upload artifact (if enabled)
         print(f"Saved best model to {save_dir} (Loss: {best_loss:.4f})")
 
 pbar.close()

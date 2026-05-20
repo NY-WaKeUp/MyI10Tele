@@ -550,7 +550,7 @@ class MuJoCoParserClass(object):
         maxgeom=50000,
         perturbation=True,
         black_sky=False,
-        shadow=False,
+        shadow=True,
         convex_hull=None,
         n_fig=0,
         use_rgb_overlay=False,

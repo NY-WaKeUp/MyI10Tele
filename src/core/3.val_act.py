@@ -6,6 +6,7 @@
 
 import os
 from re import M
+from core.my_policy import MyPolicy
 import torch
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
@@ -19,25 +20,21 @@ from lerobot.datasets.utils import dataset_to_policy_features
 
 import os
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
-os.environ["NVIDIA_VISIBLE_DEVICE"] = "0"
+MyPolicy.set_visible_cuda_devices("0")
 os.environ["DISPLAY"] = ":11.0"
 device = torch.device("cuda:0")
 
 
-dataset_metadata = LeRobotDatasetMetadata("auboI10", root="/home/ningyu/MyI10Tele/data2/")
-total_episodes = dataset_metadata.total_episodes
-print(f"total_episodes: {total_episodes}")
+DATASET_REPO = "auboI10"
+# DATASET_NAME = "data_w_shadow_x264"
+DATASET_NAME = "data_w_shadow_h264_znear0001"
+DATASET_ROOT = f"/home/ningyu/MyI10Tele/{DATASET_NAME}/"
 
-features = dataset_to_policy_features(dataset_metadata.features)
-output_features = {key: ft for key, ft in features.items() if ft.type is FeatureType.ACTION}
-input_features = {key: ft for key, ft in features.items() if key not in output_features}
-# Keep all dataset inputs (including observation.wrist_image) for multi-view ACT.
+dataset_metadata = LeRobotDatasetMetadata(DATASET_REPO, root=DATASET_ROOT)
+input_features, output_features = MyPolicy.input_output_features_from_metadata(
+    dataset_metadata
+)
 
-# Policies are initialized with a configuration class, in this case `DiffusionConfig`. For this example,
-# we'll just use the defaults and so no arguments other than input/output features need to be passed.
-# Load policy weights on CPU first so CUDA is not initialized before GLFW/MuJoCo create the GL
-# context. Initializing CUDA first can crash native rendering (e.g. settexture in libmujoco) on some drivers.
 cfg = ACTConfig(
     input_features=input_features,
     output_features=output_features,
@@ -47,7 +44,14 @@ cfg = ACTConfig(
     dropout=0.1,
     device="cpu",
 )
-policy = ACTPolicy.from_pretrained("./.ckpt/auboI10_act_w_2_view_temporal_ensemble_coeff09", config=cfg, dataset_stats=dataset_metadata.stats)
+pretrained_model_id = "lerobot/act_aloha_sim_transfer_cube_human"
+save_dir = f".ckpt/{pretrained_model_id.split('/')[-1]}_{DATASET_NAME}"
+
+policy = ACTPolicy.from_pretrained(
+    "./.ckpt/auboI10_act_w_2_view_temporal_ensemble_coeff09",
+    config=cfg,
+    dataset_stats=dataset_metadata.stats,
+)
 
 # cfg = ACTConfig(input_features=input_features, output_features=output_features)
 # policy = ACTPolicy.from_pretrained("./.ckpt/auboI10_act_w_2_view",config=cfg,dataset_stats=dataset_metadata.stats)
@@ -61,9 +65,6 @@ delta_timestamps = resolve_delta_timestamps(cfg, dataset_metadata)
 # SEED = None <- Uncomment this line to randomize the object positions
 
 REPO_NAME = "auboI10"
-# ROOT = "/Users/ningyu/code_before_paper/MyI10Tele/data" # The root directory to save the demonstrations
-ROOT = "/home/ningyu/MyI10Tele/data2"  # The root directory to save the demonstrations
-
 
 from core.my_env import MyEnv
 
@@ -83,6 +84,7 @@ policy.to(device)
 import torch
 import torchvision.transforms as T
 import numpy as np
+from core.episode_video_recorder import EpisodeVideoRecorder
 
 # 评估参数设置
 num_episodes = 20  # 测试的总轮次
@@ -94,6 +96,13 @@ policy.eval()
 # 优化图像预处理流程，使用 Compose 合并操作
 img_transform = T.Compose([T.ToPILImage(), T.Resize((256, 256)), T.ToTensor()])
 
+# Initialize video recorder
+video_recorder = EpisodeVideoRecorder(
+    output_dir="./episode_videos_act",
+    fps=20,
+    frame_size=(512, 256),
+)
+
 print(f"开始评估，共计 {num_episodes} 轮...")
 
 for episode in range(num_episodes):
@@ -103,6 +112,9 @@ for episode in range(num_episodes):
 
     step = 0
     episode_success = False
+
+    # Start video recording for this episode
+    video_recorder.start_episode(episode)
 
     # 增加 max_steps 限制，并确保可视化窗口仍在运行
     while PnPEnv.env.is_viewer_alive() and step < max_steps_per_episode:
@@ -115,13 +127,22 @@ for episode in range(num_episodes):
             obs = PnPEnv.get_joint_state()
             agent_img, wrist_img = PnPEnv.grab_image()
 
+            # Record frame to video
+            video_recorder.record_frame(agent_img, wrist_img)
+
             # 2. 图像与张量预处理
             # 使用前面定义的 transform，并通过 unsqueeze 增加 batch 维度
             image_tensor = img_transform(agent_img).unsqueeze(0).to(device)
             wrist_tensor = img_transform(wrist_img).unsqueeze(0).to(device)
 
-            state_tensor = torch.as_tensor(np.asarray(obs), dtype=torch.float32).unsqueeze(0).to(device)
-            timestamp_tensor = torch.tensor([step / 20.0], dtype=torch.float32).to(device)
+            state_tensor = (
+                torch.as_tensor(np.asarray(obs), dtype=torch.float32)
+                .unsqueeze(0)
+                .to(device)
+            )
+            timestamp_tensor = torch.tensor([step / 20.0], dtype=torch.float32).to(
+                device
+            )
 
             data = {
                 "observation.state": state_tensor,
@@ -149,6 +170,9 @@ for episode in range(num_episodes):
                 successful_episodes += 1
                 break  # 成功后跳出当前轮次的循环
 
+    # Stop video recording and mark outcome
+    video_recorder.stop(success=episode_success)
+
     # 如果达到最大步数仍未成功
     if not episode_success and PnPEnv.env.is_viewer_alive():
         print(f"第 {episode + 1} 轮: 失败 (达到最大步数 {max_steps_per_episode})")
@@ -160,11 +184,14 @@ for episode in range(num_episodes):
 
 # 6. 计算并打印最终成功率统计
 total_evaluated = episode + 1 if not PnPEnv.env.is_viewer_alive() else num_episodes
-success_rate = (successful_episodes / total_evaluated) * 100 if total_evaluated > 0 else 0.0
+success_rate = (
+    (successful_episodes / total_evaluated) * 100 if total_evaluated > 0 else 0.0
+)
 
 print("-" * 30)
 print("评估完成!")
 print(f"总计测试轮次: {total_evaluated}")
 print(f"成功轮次: {successful_episodes}")
 print(f"成功率: {success_rate:.2f}%")
+print(f"视频已保存到: ./episode_videos_act/")
 print("-" * 30)
