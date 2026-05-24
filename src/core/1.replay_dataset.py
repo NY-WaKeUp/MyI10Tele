@@ -10,14 +10,17 @@ from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
 # 1. Load the dataset
 REPO_NAME = "auboI10"
-ROOT = "/Users/ningyu/code_before_paper/MyI10Tele/data_no_shadow"
+# ROOT = "/Users/ningyu/code_before_paper/MyI10Tele/data_no_shadow"
 # ROOT = "/Users/ningyu/code_before_paper/MyI10Tele/data_no_shadow_x264"
+ROOT = "/Users/ningyu/code_before_paper/MyI10Tele/data_w_shadow_h264_znear0001"
+
 
 print(f"Loading dataset from {ROOT}...")
 dataset = LeRobotDataset(REPO_NAME, root=ROOT)
 print(f"Total episodes: {dataset.num_episodes}")
 print(f"Total frames: {dataset.num_frames}")
 print(f"Average steps per episode: {dataset.num_frames / dataset.num_episodes}")
+
 
 # --- Dataset Global Statistics ---
 print("\n--- Dataset Global Statistics ---")
@@ -40,6 +43,8 @@ print(f"State Range (Max) : {state_max}")
 print("-" * 30)
 print(f"Action Range (Min): {action_min}")
 print(f"Action Range (Max): {action_max}")
+
+# exit(0)
 
 # --- 分析特定 Episode ---
 EPISODE_ID = 0
