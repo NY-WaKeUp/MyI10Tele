@@ -48,3 +48,9 @@ src/core/lerobot/
 src/core/openvla-7b/
 src/core/openvla-7b-finetuned-libero-spatial/
 src/core/physical-intelligence/
+
+.vscode
+.cursorindexingignore
+
+src/core/outputs/
+src/core/videos/

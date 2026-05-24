@@ -6,7 +6,12 @@
 
 import os
 from re import M
-from core.my_policy import MyPolicy
+from core.my_policy import (
+    MyPolicy,
+    resolve_paligemma_tokenizer_path,
+    resolve_pi0_pretrained_path,
+)
+from lerobot.policies.pi0.modeling_pi0 import PI0Config, PI0Policy
 import torch
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
@@ -20,51 +25,92 @@ from lerobot.datasets.utils import dataset_to_policy_features
 
 import os
 
-MyPolicy.set_visible_cuda_devices("0")
+from transformers import AutoTokenizer
+
+MyPolicy.set_visible_cuda_devices("1")
 os.environ["DISPLAY"] = ":11.0"
 device = torch.device("cuda:0")
 
 
 DATASET_REPO = "auboI10"
-# DATASET_NAME = "data_w_shadow_x264"
+# DATASET_ROOT = "/home/ningyu/MyI10Tele/data2/"
 DATASET_NAME = "data_w_shadow_h264_znear0001"
 DATASET_ROOT = f"/home/ningyu/MyI10Tele/{DATASET_NAME}/"
+PI0_PRETRAINED_DIR: str | None = None
+_allow_hub = False
+_allow_hub_tokenizer = False
+COMPILE_PI0_MODEL = False  #  note 和训练不一样，关掉编译
+USE_GRADIENT_CHECKPOINTING = not COMPILE_PI0_MODEL
+PI0_COMPILE_MODE = "default"
+pretrained_model_id, pi_pretrained_local_only = resolve_pi0_pretrained_path(
+    PI0_PRETRAINED_DIR,
+    allow_hub_download=_allow_hub,
+)
 
 dataset_metadata = LeRobotDatasetMetadata(DATASET_REPO, root=DATASET_ROOT)
-input_features, output_features = MyPolicy.input_output_features_from_metadata(
-    dataset_metadata
-)
+total_episodes = dataset_metadata.total_episodes
+print(f"total_episodes: {total_episodes}")
 
-cfg = ACTConfig(
-    input_features=input_features,
-    output_features=output_features,
-    chunk_size=100,
-    n_action_steps=1,
-    temporal_ensemble_coeff=0.9,
-    dropout=0.1,
-    device="cpu",
-)
-pretrained_model_id = "lerobot/act_aloha_sim_transfer_cube_human"
-save_dir = f".ckpt/{pretrained_model_id.split('/')[-1]}_{DATASET_NAME}"
+features = dataset_to_policy_features(dataset_metadata.features)
+output_features = {
+    key: ft for key, ft in features.items() if ft.type is FeatureType.ACTION
+}
+input_features = {key: ft for key, ft in features.items() if key not in output_features}
 
-policy = ACTPolicy.from_pretrained(
-    "./.ckpt/auboI10_act_w_2_view_temporal_ensemble_coeff09",
-    config=cfg,
-    dataset_stats=dataset_metadata.stats,
-)
+is_finetuning = True
+save_dir = f".ckpt/{pretrained_model_id.split('/')[-1]}/{DATASET_NAME}"
 
-# cfg = ACTConfig(input_features=input_features, output_features=output_features)
-# policy = ACTPolicy.from_pretrained("./.ckpt/auboI10_act_w_2_view",config=cfg,dataset_stats=dataset_metadata.stats)
+if is_finetuning:
+    print(
+        f"Loading finetuned PI0 model: {save_dir} (local_files_only={pi_pretrained_local_only})"
+    )
+    cfg = PI0Config(
+        input_features=input_features,
+        output_features=output_features,
+        compile_model=COMPILE_PI0_MODEL,
+        compile_mode=PI0_COMPILE_MODE if COMPILE_PI0_MODEL else "default",
+        dtype="bfloat16",
+        gradient_checkpointing=USE_GRADIENT_CHECKPOINTING,
+        train_expert_only=True,
+        # PreTrainedConfig must stay JSON/YAML-serializable (draccus); use str not torch.device.
+        chunk_size=100,
+        n_action_steps=1,  # ? can do this ?
+        device=str(device),
+    )
+    policy = PI0Policy.from_pretrained(
+        save_dir,
+        config=cfg,
+        dataset_stats=dataset_metadata.stats,
+        local_files_only=pi_pretrained_local_only,
+    )
+    print("Train expert only for fine-tuning.")
+    if COMPILE_PI0_MODEL and not USE_GRADIENT_CHECKPOINTING:
+        print(
+            "compile_model=True: gradient checkpointing disabled (functorch RNG functionalization "
+            "with recomputed flash-attention ops is unsupported); lower batch size if CUDA OOM."
+        )
+    if COMPILE_PI0_MODEL:
+        print(f"torch.compile mode: {PI0_COMPILE_MODE}")
+        if PI0_COMPILE_MODE == "max-autotune":
+            print(
+                "CUDA Graphs on (max-autotune). If you see CUDAGraph overwrite errors, use "
+                "PI0_CUDAGRAPHS=0 or PI0_COMPILE_MODE=max-autotune-no-cudagraphs."
+            )
+else:
+    print("Initializing PI0 model from scratch...")
+    cfg = PI0Config(
+        input_features=input_features,
+        output_features=output_features,
+        chunk_size=100,
+        n_action_steps=1,
+        dtype="bfloat16",
+        gradient_checkpointing=True,
+        device=str(device),
+    )
+    policy = PI0Policy(cfg, dataset_stats=dataset_metadata.stats)
 
 # This allows us to construct the data with action chunking
 delta_timestamps = resolve_delta_timestamps(cfg, dataset_metadata)
-
-
-# If you want to randomize the object positions, set this to None
-# If you fix the seed, the object positions will be the same every time
-# SEED = None <- Uncomment this line to randomize the object positions
-
-REPO_NAME = "auboI10"
 
 from core.my_env import MyEnv
 
@@ -80,6 +126,18 @@ print(f"state_type: {PnPEnv.state_type}")
 
 policy.to(device)
 
+# 获取分词器路径（保持与训练一致）
+_tokenizer_src, _tokenizer_local = resolve_paligemma_tokenizer_path(
+    allow_hub_download=_allow_hub_tokenizer,
+)
+tokenizer = AutoTokenizer.from_pretrained(
+    _tokenizer_src, local_files_only=_tokenizer_local
+)
+tokenizer.padding_side = "right"
+TOKENIZER_MAX_LENGTH = 48  # 对应你训练脚本中的 cfg.tokenizer_max_length
+
+# --- 推理循环内部 ---
+task_string = "Put cube on the black platform"
 
 import torch
 import torchvision.transforms as T
@@ -98,7 +156,7 @@ img_transform = T.Compose([T.ToPILImage(), T.Resize((256, 256)), T.ToTensor()])
 
 # Initialize video recorder
 video_recorder = EpisodeVideoRecorder(
-    output_dir="./episode_videos_act",
+    output_dir="./episode_videos_pi0",
     fps=20,
     frame_size=(512, 256),
 )
@@ -121,12 +179,8 @@ for episode in range(num_episodes):
         PnPEnv.step_env()
 
         if PnPEnv.env.loop_every(HZ=20):
-            # 1. Observation must match training data: teleop stores observation.state from step()
-            # after teleop, which for state_type=="ee_pose" is flange pose (xyz+rpy+gripper).
-            # Action labels in the dataset are joint-space rows from get_obs_action(); policy predicts those.
             obs = PnPEnv.get_joint_state()
             agent_img, wrist_img = PnPEnv.grab_image()
-
             # Record frame to video
             video_recorder.record_frame(agent_img, wrist_img)
 
@@ -143,12 +197,25 @@ for episode in range(num_episodes):
             timestamp_tensor = torch.tensor([step / 20.0], dtype=torch.float32).to(
                 device
             )
+            # --- 推理循环内部 ---
+            task_string = "Put cube on the black platform"
+
+            # 预处理文本
+            tokens = tokenizer(
+                [task_string],
+                padding="max_length",
+                max_length=TOKENIZER_MAX_LENGTH,
+                truncation=True,
+                return_tensors="pt",
+            ).to(device)
 
             data = {
                 "observation.state": state_tensor,
                 "observation.image": image_tensor,
                 "observation.wrist_image": wrist_tensor,
-                "task": ["Put cube on the black platform"],
+                "observation.language.tokens": tokens["input_ids"],
+                # 同时也建议加上 attention_mask，防止模型推理异常
+                "observation.language.attention_mask": tokens["attention_mask"],
                 "timestamp": timestamp_tensor,
             }
 
@@ -193,5 +260,5 @@ print("评估完成!")
 print(f"总计测试轮次: {total_evaluated}")
 print(f"成功轮次: {successful_episodes}")
 print(f"成功率: {success_rate:.2f}%")
-print(f"视频已保存到: ./episode_videos_act/")
+print(f"视频已保存到: ./episode_videos_pi0/")
 print("-" * 30)

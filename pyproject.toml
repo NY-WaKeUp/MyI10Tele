@@ -7,6 +7,7 @@ requires-python = ">=3.12"
 dependencies = [
     "cv>=1.0.0",
     "ffmpeg>=1.4",
+    "gym-aloha>=0.1.3",
     "glfw",
     "ipykernel>=7.2.0",
     "ipywidgets>=8.1.8",
@@ -24,5 +25,6 @@ dependencies = [
     "termcolor>=3.3.0",
     "torch",
     "torchcodec>=0.10.0",
+    "transformers @ git+https://github.com/huggingface/transformers.git@dcddb970176382c0fcf4521b0c0e6fc15894dfe0",
     "trimesh",
 ]
