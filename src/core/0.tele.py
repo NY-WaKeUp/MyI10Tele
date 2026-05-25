@@ -84,7 +84,7 @@ def main() -> None:
         print("Load from previous dataset")
         dataset = LeRobotDataset(REPO_NAME, root=ROOT)
 
-    action = np.zeros(7)
+    actions = np.zeros(7)
     episode_id = 0
     record_flag = False
     while pn_env.env.is_viewer_alive() and episode_id < NUM_DEMO:
@@ -97,8 +97,8 @@ def main() -> None:
                 pn_env.reset()
                 episode_id += 1
                 record_flag = False
-            action, reset = pn_env.teleop_robot()
-            if not record_flag and np.any(action != 0):
+            actions, reset = pn_env.teleop_robot()
+            if not record_flag and np.any(actions != 0):
                 record_flag = True
                 print("Start recording")
             if reset:
