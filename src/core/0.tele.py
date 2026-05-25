@@ -13,10 +13,10 @@ from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
 REPO_NAME = "auboI10"
 NUM_DEMO = 50
-ROOT = "/home/ningyu/data_auboI10_v2"
+ROOT = os.path.expanduser("~/code_before_paper/MyI10Tele/data_auboI10_v2")
 TASK_NAME = "Put cube on the black platform"
-XML_PATH = (
-    "/Users/ningyu/code_before_paper/MyI10Tele/assets/aubo_i10_inspire/myscene.xml"
+XML_PATH = os.path.expanduser(
+    "~/code_before_paper/MyI10Tele/assets/aubo_i10_inspire/myscene.xml"
 )
 
 
@@ -117,7 +117,7 @@ def main() -> None:
             wrist_image = cv2.resize(
                 wrist_image, (256, 256), interpolation=cv2.INTER_AREA
             )
-            post_state = pn_env.step(action)
+            post_state = pn_env.step(actions)
             if record_flag:
                 dataset.add_frame(
                     {
