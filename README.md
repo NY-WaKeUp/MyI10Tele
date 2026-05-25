@@ -21,3 +21,11 @@ Default task: “Put cube on the black platform”
 
 This tool is intended for data collection in imitation learning, robotic reinforcement learning, and similar algorithm research.  
 To customize the collected elements or tasks, simply modify the relevant parameters or environment initialization in `src/core/0.tele.py`.
+
+**openpi WebSocket evaluation (trained JAX checkpoint)**
+
+1. Start the policy server in the [openpi](https://github.com/Physical-Intelligence/openpi) repo (put `--default-prompt` **before** `policy:checkpoint`; see `8.val_openpi_sim.py` docstring).
+2. Install the lightweight client: `uv pip install -e /path/to/openpi/packages/openpi-client`
+3. Run: `PYTHONPATH=src python src/core/8.val_openpi_sim.py --host localhost --port 8000`
+
+See the docstring at the top of `src/core/8.val_openpi_sim.py` for the full `serve_policy` command.

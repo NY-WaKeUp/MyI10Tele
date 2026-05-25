@@ -54,3 +54,7 @@ src/core/physical-intelligence/
 
 src/core/outputs/
 src/core/videos/
+
+episode_videos_openpi/
+
+pretrained/

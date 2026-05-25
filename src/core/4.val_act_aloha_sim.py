@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""ACT closed-loop rollout in gym_aloha (pairs with 2.train_act.py on aloha_sim_transfer_cube_human).
+"""ACT closed-loop rollout in gym_aloha (aligned with official LeRobot eval).
 
-Requires: pip install gym-aloha
-Run from repo root with venv active, e.g.:
-  cd src && python core/4.val_act_aloha_sim.py
+Official eval command (Model Card):
+  https://huggingface.co/lerobot/act_aloha_sim_transfer_cube_human
+
+Run from repo root with venv active:
+  cd src/core && python 4.val_act_aloha_sim.py
 """
 
 from __future__ import annotations
@@ -14,7 +16,7 @@ import os
 from contextlib import nullcontext
 from pathlib import Path
 
-import gym_aloha  # noqa: F401 — registers AlohaTransferCube-v0 with gymnasium
+import gym_aloha  # noqa: F401 — registers gym_aloha/AlohaTransferCube-v0
 import torch
 from lerobot.configs.policies import PreTrainedConfig
 from lerobot.datasets.lerobot_dataset import LeRobotDatasetMetadata
@@ -27,19 +29,29 @@ from lerobot.utils.utils import get_safe_torch_device
 
 from core.my_policy import MyPolicy
 
-# --- Match 2.train_act.py (aloha sim fine-tune / scratch) ---
-DATASET_REPO = "auboI10"
+# --- Previous (custom) dataset / eval settings ---
+# DATASET_REPO = "auboI10"
+# POLICY_PATH: str | Path | None = None  # auto-find under .ckpt/
+# POLICY_PATH = PRETRAINED_MODEL_ID
+# N_EPISODES = 50
+# BATCH_SIZE = 128
+
+# --- Dataset (local copy of lerobot/aloha_sim_transfer_cube_human) ---
+DATASET_REPO = "lerobot/aloha_sim_transfer_cube_human"
 DATASET_NAME = "aloha_sim_transfer_cube_human"
 DATASET_ROOT = os.path.expanduser(
     f"~/openpi-cache/huggingface/lerobot/lerobot/{DATASET_NAME}"
 )
+
 PRETRAINED_MODEL_ID = "lerobot/act_aloha_sim_transfer_cube_human"
 _CKPT_SUBDIR = f"{PRETRAINED_MODEL_ID.split('/')[-1]}/{DATASET_NAME}"
-# Local ckpt from 2.train_act.py; uncomment hub id to eval official hub weights:
-POLICY_PATH: str | Path | None = None  # None = auto-find under .ckpt/
-# POLICY_PATH = PRETRAINED_MODEL_ID
 
-# gym_aloha task id for this dataset
+# True: Hub checkpoint from Model Card (~83% on 500 eps). False: local 2.train_act.py ckpt.
+USE_OFFICIAL_HUB_CHECKPOINT = True
+POLICY_PATH: str | Path | None = (
+    PRETRAINED_MODEL_ID if USE_OFFICIAL_HUB_CHECKPOINT else None
+)
+
 ALOHA_TASK = "AlohaTransferCube-v0"
 
 MyPolicy.set_visible_cuda_devices("0")
@@ -47,8 +59,9 @@ os.environ.setdefault("DISPLAY", ":11.0")
 os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
 
 DEVICE = torch.device("cuda:0")
-N_EPISODES = 50  # set to 2 for a quick smoke test
-BATCH_SIZE = 128
+# Official eval: 500 episodes, batch 50. Set N_EPISODES=10 for a quick smoke test.
+N_EPISODES = 500
+BATCH_SIZE = 50
 SEED = 1000
 USE_AMP = False
 MAX_VIDEOS = 10
@@ -56,7 +69,6 @@ OUTPUT_DIR = Path(f"outputs/eval/act_aloha_sim/{DATASET_NAME}")
 
 
 def _find_local_ckpt_dir() -> Path | None:
-    """2.train_act.py saves to cwd-relative .ckpt/ (often src/core/.ckpt when run there)."""
     rel = Path(".ckpt") / _CKPT_SUBDIR
     candidates = [
         Path(__file__).resolve().parent / rel,
@@ -75,7 +87,7 @@ def _resolve_policy_path(path: str | Path | None) -> str | Path:
         if local.is_dir() and (local / "config.json").is_file():
             return local.resolve()
         if isinstance(path, str) and "/" in path and not local.exists():
-            return path  # Hugging Face hub repo id
+            return path
         raise FileNotFoundError(f"No checkpoint at {local.resolve()}")
 
     found = _find_local_ckpt_dir()
@@ -83,7 +95,7 @@ def _resolve_policy_path(path: str | Path | None) -> str | Path:
         return found
     raise FileNotFoundError(
         f"No local checkpoint under .ckpt/{_CKPT_SUBDIR}. "
-        "Train with 2.train_act.py or set POLICY_PATH = PRETRAINED_MODEL_ID."
+        f"Train with 2.train_act.py or set USE_OFFICIAL_HUB_CHECKPOINT=True."
     )
 
 
@@ -92,22 +104,38 @@ def _make_eval_processors(
     policy_path: str | Path,
     device: torch.device,
 ):
-    """Hub / migrated ckpts ship processor JSON; 2.train_act.py ckpts need dataset stats."""
-    ckpt = Path(policy_path)
-    if ckpt.is_dir() and (ckpt / f"{POLICY_PREPROCESSOR_DEFAULT_NAME}.json").is_file():
-        return make_pre_post_processors(
-            policy_cfg=policy_cfg,
-            pretrained_path=str(ckpt),
-            preprocessor_overrides={"device_processor": {"device": str(device)}},
-        )
+    # --- Previous processor path (local ckpt only, no dataset_stats fallback) ---
+    # ckpt = Path(policy_path)
+    # if ckpt.is_dir() and (ckpt / f"{POLICY_PREPROCESSOR_DEFAULT_NAME}.json").is_file():
+    #     return make_pre_post_processors(
+    #         policy_cfg=policy_cfg,
+    #         pretrained_path=str(ckpt),
+    #         preprocessor_overrides={"device_processor": {"device": str(device)}},
+    #     )
+    # print(
+    #     "No policy_preprocessor.json in checkpoint; building normalizers from dataset stats "
+    #     f"({DATASET_ROOT})."
+    # )
+    # dataset_metadata = LeRobotDatasetMetadata(DATASET_REPO, root=DATASET_ROOT)
+    # return make_pre_post_processors(
+    #     policy_cfg=policy_cfg,
+    #     dataset_stats=dataset_metadata.stats,
+    #     preprocessor_overrides={"device_processor": {"device": str(device)}},
+    # )
 
-    print(
-        "No policy_preprocessor.json in checkpoint; building normalizers from dataset stats "
-        f"({DATASET_ROOT})."
-    )
     dataset_metadata = LeRobotDatasetMetadata(DATASET_REPO, root=DATASET_ROOT)
+    ckpt = Path(policy_path)
+    pretrained_path = str(ckpt.resolve()) if ckpt.is_dir() else str(policy_path)
+    if (
+        ckpt.is_dir()
+        and not (ckpt / f"{POLICY_PREPROCESSOR_DEFAULT_NAME}.json").is_file()
+    ):
+        print(
+            "No policy_preprocessor.json in local checkpoint; using dataset stats for normalizers."
+        )
     return make_pre_post_processors(
         policy_cfg=policy_cfg,
+        pretrained_path=pretrained_path,
         dataset_stats=dataset_metadata.stats,
         preprocessor_overrides={"device_processor": {"device": str(device)}},
     )
@@ -119,6 +147,7 @@ def main() -> None:
     device = get_safe_torch_device(str(DEVICE), log=True)
     print(f"Policy: {policy_path}")
     print(f"Env: gym_aloha/{ALOHA_TASK}  episodes={N_EPISODES}  batch={BATCH_SIZE}")
+    print(f"Official hub eval: {USE_OFFICIAL_HUB_CHECKPOINT}")
 
     env_cfg = AlohaEnv(task=ALOHA_TASK)
     envs = make_env(env_cfg, n_envs=BATCH_SIZE, use_async_envs=False)

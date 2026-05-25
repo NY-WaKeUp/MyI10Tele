@@ -489,15 +489,18 @@ def get_monitor_size():
     Linux headless runs. Values only affect window/fullscreen layout; override
     with MYI10_MONITOR_WIDTH / MYI10_MONITOR_HEIGHT if needed.
     """
+    w = int(os.environ.get("MYI10_MONITOR_WIDTH", "1920"))
+    h = int(os.environ.get("MYI10_MONITOR_HEIGHT", "1080"))
     if (
         sys.platform.startswith("linux")
         and not os.environ.get("DISPLAY")
         and not os.environ.get("WAYLAND_DISPLAY")
     ):
-        w = int(os.environ.get("MYI10_MONITOR_WIDTH", "1920"))
-        h = int(os.environ.get("MYI10_MONITOR_HEIGHT", "1080"))
         return w, h
-    import pyautogui
+    try:
+        import pyautogui
+    except ImportError:
+        return w, h
 
     return pyautogui.size()
 
