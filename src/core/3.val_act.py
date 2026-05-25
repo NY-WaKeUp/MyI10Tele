@@ -25,10 +25,16 @@ os.environ["DISPLAY"] = ":11.0"
 device = torch.device("cuda:0")
 
 
-DATASET_REPO = "auboI10"
-# DATASET_NAME = "data_w_shadow_x264"
-DATASET_NAME = "data_w_shadow_h264_znear0001"
-DATASET_ROOT = f"/home/ningyu/MyI10Tele/{DATASET_NAME}/"
+from core.dataset_config import (
+    ACTION_LABEL,
+    REPO_NAME as DATASET_REPO,
+    TASK_NAME,
+    XML_PATH,
+    dataset_root,
+    env_action_type,
+)
+
+DATASET_ROOT = dataset_root()
 
 dataset_metadata = LeRobotDatasetMetadata(DATASET_REPO, root=DATASET_ROOT)
 input_features, output_features = MyPolicy.input_output_features_from_metadata(
@@ -45,7 +51,7 @@ cfg = ACTConfig(
     device="cpu",
 )
 pretrained_model_id = "lerobot/act_aloha_sim_transfer_cube_human"
-save_dir = f".ckpt/{pretrained_model_id.split('/')[-1]}_{DATASET_NAME}"
+save_dir = f".ckpt/{pretrained_model_id.split('/')[-1]}_auboI10_{ACTION_LABEL}"
 
 policy = ACTPolicy.from_pretrained(
     "./.ckpt/auboI10_act_w_2_view_temporal_ensemble_coeff09",
@@ -64,17 +70,12 @@ delta_timestamps = resolve_delta_timestamps(cfg, dataset_metadata)
 # If you fix the seed, the object positions will be the same every time
 # SEED = None <- Uncomment this line to randomize the object positions
 
-REPO_NAME = "auboI10"
-
 from core.my_env import MyEnv
 
-TASK_NAME = "Put cube on the black platform"
-# xml_path = '/Users/ningyu/code_before_paper/MyI10Tele/assets/aubo_i10_inspire/myscene.xml'
-xml_path = "/home/ningyu/MyI10Tele/assets/aubo_i10_inspire/myscene.xml"
-# xml_path = './asset/example_scene_y_i10.xml'
-# Define the environment
-
-PnPEnv = MyEnv(xml_path, seed=42, action_type="qpos", state_type="qpos")
+_eval_action = env_action_type()
+PnPEnv = MyEnv(XML_PATH, seed=42, action_type=_eval_action, state_type="qpos")
+print(f"dataset: {DATASET_ROOT}")
+print(f"ACTION_LABEL: {ACTION_LABEL}")
 print(f"action_type: {PnPEnv.action_type}")
 print(f"state_type: {PnPEnv.state_type}")
 
@@ -121,9 +122,7 @@ for episode in range(num_episodes):
         PnPEnv.step_env()
 
         if PnPEnv.env.loop_every(HZ=20):
-            # 1. Observation must match training data: teleop stores observation.state from step()
-            # after teleop, which for state_type=="ee_pose" is flange pose (xyz+rpy+gripper).
-            # Action labels in the dataset are joint-space rows from get_obs_action(); policy predicts those.
+            # observation.state = pre-step joint qpos (same for qpos/ee_pose datasets)
             obs = PnPEnv.get_joint_state()
             agent_img, wrist_img = PnPEnv.grab_image()
 
@@ -148,7 +147,7 @@ for episode in range(num_episodes):
                 "observation.state": state_tensor,
                 "observation.image": image_tensor,
                 "observation.wrist_image": wrist_tensor,
-                "task": ["Put cube on the black platform"],
+                "task": [TASK_NAME],
                 "timestamp": timestamp_tensor,
             }
 
