@@ -117,7 +117,7 @@ def main() -> None:
             wrist_image = cv2.resize(
                 wrist_image, (256, 256), interpolation=cv2.INTER_AREA
             )
-            post_state = pn_env.step(action)
+            post_state = pn_env.step(actions)
             if record_flag:
                 dataset.add_frame(
                     {
