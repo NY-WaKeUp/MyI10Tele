@@ -12,15 +12,9 @@ from lerobot.datasets.lerobot_dataset import LeRobotDataset
 REPO_NAME = "auboI10"
 # ROOT = "/Users/ningyu/code_before_paper/MyI10Tele/data_no_shadow"
 # ROOT = "/Users/ningyu/code_before_paper/MyI10Tele/data_no_shadow_x264"
-<<<<<<< HEAD
-ROOT = "/Users/ningyu/code_before_paper/MyI10Tele/data_w_shadow_h264_znear0001"
+# ROOT = "/Users/ningyu/code_before_paper/MyI10Tele/data_w_shadow_h264_znear0001"
+ROOT = os.path.expanduser("~/code_before_paper/MyI10Tele/data_auboI10_v2")
 
-=======
-# ROOT = "/home/ningyu/MyI10Tele/data_w_shadow_h264_znear0001"
-ROOT = os.path.expanduser(
-    "~/openpi-cache/huggingface/lerobot/lerobot/aloha_sim_transfer_cube_human"
-)
->>>>>>> d9e70ef31a6278ec8ca8681a10a7c341845ca3d1
 
 print(f"Loading dataset from {ROOT}...")
 dataset = LeRobotDataset(REPO_NAME, root=ROOT)
@@ -34,7 +28,7 @@ print("\n--- Dataset Global Statistics ---")
 # 使用 dataset.hf_dataset.with_format("numpy") 确保获取的是 numpy 数组
 hf_np = dataset.hf_dataset.with_format("numpy")
 all_states = np.array(hf_np["observation.state"])
-all_actions = np.array(hf_np["action"])
+all_actions = np.array(hf_np["actions"])
 
 # 如果数据是嵌套的 (Episode, Frame, Dim)，需要 flatten
 if len(all_states.shape) > 2:
@@ -61,7 +55,7 @@ num_frames_in_ep = len(episode_data)
 print(f"\nAnalyzing Episode {EPISODE_ID} ({num_frames_in_ep} frames)...")
 
 states = np.array(episode_data["observation.state"])
-actions = np.array(episode_data["action"])
+actions = np.array(episode_data["actions"])
 actions_diff = np.diff(actions, axis=0)
 
 # --- 2. 绘制轨迹分析图 ---
@@ -150,7 +144,7 @@ def update(val):
     img_w.set_data(f_data["observation.wrist_image"].permute(1, 2, 0).numpy())
 
     s_v = f_data["observation.state"].numpy()
-    a_v = f_data["action"].numpy()
+    a_v = f_data["actions"].numpy()
     text_display.set_text(
         f"FRAME: {idx:04d} | EPISODE: {EPISODE_ID}\n"
         f"STATE : {np.round(s_v, 4)}\n"
