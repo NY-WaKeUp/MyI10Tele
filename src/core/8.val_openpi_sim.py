@@ -93,11 +93,6 @@ def parse_args() -> argparse.Namespace:
         default="./episode_videos_openpi",
         help="Directory for side-by-side rollout videos",
     )
-    parser.add_argument(
-        "--legacy-pre-step-state",
-        action="store_true",
-        help="Use pre-step state/images (old eval bug); default matches 0.tele.py logging",
-    )
     return parser.parse_args()
 
 
@@ -128,11 +123,8 @@ def main() -> None:
         episode_success = False
         video_recorder.start_episode(episode)
 
-        # Match 0.tele.py: observation.state is post-step; images are grabbed pre-step.
-        state = _as_state(env.get_joint_state())
-        prev_agent_img: np.ndarray | None = None
-        prev_wrist_img: np.ndarray | None = None
-
+        # Dataset (v2 tele): state = pre-step q_t, actions = post-step q_{t+1}.
+        # Inference: anchor state is pre-step get_joint_state(); policy outputs absolute q targets.
         while env.env.is_viewer_alive() and step < args.max_steps:
             env.step_env()
 
@@ -141,22 +133,11 @@ def main() -> None:
 
             agent_img, wrist_img = env.grab_image()
             video_recorder.record_frame(agent_img, wrist_img)
+            state = _as_state(env.get_joint_state())
 
             if not action_plan:
-                if args.legacy_pre_step_state:
-                    infer_agent, infer_wrist = agent_img, wrist_img
-                    infer_state = _as_state(env.get_joint_state())
-                else:
-                    infer_agent = (
-                        prev_agent_img if prev_agent_img is not None else agent_img
-                    )
-                    infer_wrist = (
-                        prev_wrist_img if prev_wrist_img is not None else wrist_img
-                    )
-                    infer_state = state
-
                 element = _build_observation(
-                    infer_agent, infer_wrist, infer_state, args.prompt, args.resize_size
+                    agent_img, wrist_img, state, args.prompt, args.resize_size
                 )
                 action_chunk = client.infer(element)["actions"]
                 chunk = np.asarray(action_chunk)
@@ -169,9 +150,7 @@ def main() -> None:
                     action_plan.append(np.asarray(chunk[i, :7], dtype=np.float64))
 
             action_np = action_plan.popleft()
-            state = _as_state(env.step(action_np))
-            prev_agent_img = agent_img
-            prev_wrist_img = wrist_img
+            env.step(action_np)
             env.render()
             step += 1
 

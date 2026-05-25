@@ -11,11 +11,9 @@ from core.my_env import MyEnv
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
 
-REPO_NAME = "ningyv/auboI10"
-NUM_DEMO = 40
-# ROOT = "/Users/ningyu/code_before_paper/MyI10Tele/data_w_shadow_x264"
-ROOT = "/Users/ningyu/code_before_paper/MyI10Tele/data_w_shadow_h264_znear0001"
-
+REPO_NAME = "auboI10"
+NUM_DEMO = 50
+ROOT = "/home/ningyu/data_auboI10_v2"
 TASK_NAME = "Put cube on the black platform"
 XML_PATH = (
     "/Users/ningyu/code_before_paper/MyI10Tele/assets/aubo_i10_inspire/myscene.xml"
@@ -26,7 +24,8 @@ def main() -> None:
     # macOS spawn + GLFW: subprocess image writers re-import this file; keep processes off.
     image_writer_processes = 0 if sys.platform == "darwin" else 5
 
-    pn_env = MyEnv(XML_PATH, seed=42)
+    # Keyboard teleop drives ee_pose; labels stored as joint qpos (pre/post) for openpi.
+    pn_env = MyEnv(XML_PATH, seed=42, action_type="ee_pose", state_type="qpos")
     print(f"action_type: {pn_env.action_type}")
     print(f"state_type: {pn_env.state_type}")
 
@@ -67,10 +66,10 @@ def main() -> None:
                     "shape": (7,),
                     "names": ["state"],
                 },
-                "action": {
+                "actions": {
                     "dtype": "float32",
                     "shape": (7,),
-                    "names": ["action"],
+                    "names": ["actions"],
                 },
                 "obj_init": {
                     "dtype": "float32",
@@ -110,8 +109,7 @@ def main() -> None:
                     dataset.clear_episode_buffer()
                 record_flag = False
                 continue
-            obs_action = pn_env.get_obs_action()
-            assert obs_action.type == "qpos"
+            pre_state = pn_env.get_joint_state()
             agent_image, wrist_image = pn_env.grab_image()
             agent_image = cv2.resize(
                 agent_image, (256, 256), interpolation=cv2.INTER_AREA
@@ -119,17 +117,14 @@ def main() -> None:
             wrist_image = cv2.resize(
                 wrist_image, (256, 256), interpolation=cv2.INTER_AREA
             )
-            obs_state = pn_env.step(action)
-            assert (
-                obs_state.type == pn_env.state_type
-            ), f"expect state_type: {pn_env.state_type}, but got {obs_state.type}"
+            post_state = pn_env.step(action)
             if record_flag:
                 dataset.add_frame(
                     {
                         "observation.image": agent_image,
                         "observation.wrist_image": wrist_image,
-                        "observation.state": obs_state,
-                        "action": obs_action,
+                        "observation.state": pre_state,
+                        "actions": post_state,
                         "obj_init": pn_env.obj_init_pose,
                         "task": TASK_NAME,
                     }
