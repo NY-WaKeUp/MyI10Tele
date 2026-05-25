@@ -1,34 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+"""PI0 fine-tuning aligned with LeRobot docs + Aloha sim recipe (Issue #1951).
 
-# PI0 (π₀) Policy Fine-tuning via LeRobot
-#
-# PI0 = PaliGemma VLM + Gemma Action Expert, trained with Flow Matching.
-#
-# Prerequisites:
-#   pip install "transformers @ git+https://github.com/huggingface/transformers.git@dcddb970176382c0fcf4521b0c0e6fc15894dfe0"
-#   pip install sentencepiece
-#   huggingface-cli login  (PaliGemma tokenizer is gated)
-#
-# Offline / local assets (default: no Hub download):
-#   - PI0 weights: resolve_pi0_pretrained_path scans PI0_PRETRAINED, pretrained/pi0_*,
-#     then HF hub cache models--lerobot--pi0*/snapshots (newest with model.safetensors).
-#   - Tokenizer: resolve_paligemma_tokenizer_path scans PI0_TOKENIZER, pretrained/paligemma-3b-pt-224,
-#     then HF hub cache for google/paligemma-3b-pt-224.
-#   - Set PI0_ALLOW_HUB_DOWNLOAD=1 to allow Hub fallback for PI0 weights only.
-#   - Tokenizer Hub fallback is separate: PI0_TOKENIZER_ALLOW_HUB_DOWNLOAD=1 (default off so offline runs
-#     do not hit huggingface.co when PI0_ALLOW_HUB_DOWNLOAD is set for weights).
-#
-# Hugging Face cache defaults (set before importing torch/transformers; override with env):
-#   HF_HOME=~/.cache/huggingface, HF_HUB_CACHE=~/.cache/huggingface/hub
-#
-# train_expert_only: only VLM weights are frozen (requires_grad=False); forward still runs full
-# PaliGemma (vision + language + prefix transformer). Gradients still flow through VLM activations
-# into the expert, so most FLOPs remain — you save optimizer state / param updates, not the big forward.
+References:
+  - https://huggingface.co/docs/lerobot/en/pi0
+  - https://github.com/huggingface/lerobot/issues/1951 (aloha_sim_transfer_cube_human, 100k steps)
+  - Base weights: lerobot/pi0_base (local via resolve_pi0_pretrained_path)
+"""
 
 import os
+from contextlib import nullcontext
 from pathlib import Path
-
 
 _hf_root = Path.home() / ".cache" / "huggingface"
 os.environ.setdefault("HF_HOME", str(_hf_root))
@@ -36,20 +18,17 @@ os.environ.setdefault("HF_HUB_CACHE", str(_hf_root / "hub"))
 _allow_hub = False
 _allow_hub_tokenizer = False
 
-
-# Reduce allocator fragmentation (helps when compile / cudagraphs reserve pools).
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
-PI0_NUM_EPOCHS = 250
+os.environ.setdefault("DISPLAY", ":11.0")
+
 import torch
 from tqdm.auto import tqdm
 from transformers import AutoTokenizer
 
-from lerobot.datasets.lerobot_dataset import LeRobotDataset, LeRobotDatasetMetadata
-from lerobot.policies.pi0.modeling_pi0 import PI0Policy
-from lerobot.policies.pi0.configuration_pi0 import PI0Config
 from lerobot.datasets.factory import resolve_delta_timestamps
-from dist.dist import AddGaussianNoise
-from torchvision import transforms
+from lerobot.datasets.lerobot_dataset import LeRobotDataset, LeRobotDatasetMetadata
+from lerobot.policies.pi0.configuration_pi0 import PI0Config
+from lerobot.policies.pi0.modeling_pi0 import PI0Policy
 
 from core.my_policy import (
     MyPIPolicy,
@@ -57,141 +36,172 @@ from core.my_policy import (
     resolve_paligemma_tokenizer_path,
     resolve_pi0_pretrained_path,
 )
-import wandb
-from lerobot.rl.wandb_utils import get_safe_wandb_artifact_name
-from huggingface_hub.constants import SAFETENSORS_SINGLE_FILE
+
+# --- Previous imports ---
+# from dist.dist import AddGaussianNoise
+# from torchvision import transforms
+# import wandb
+# from lerobot.rl.wandb_utils import get_safe_wandb_artifact_name
+# from huggingface_hub.constants import SAFETENSORS_SINGLE_FILE
 
 MyPolicy.set_visible_cuda_devices("0")
 device = torch.device("cuda")
 
-# torch.compile + activation checkpointing: AOT partitioner's functionalize_rng_ops walks joint-graph
-# nodes marked MUST_RECOMPUTE that carry RNG (nondeterministic_seeded), e.g. flash SDPA internals.
-# After min-cut partition, those nodes may not appear by the same name in the bw subgraph → KeyError.
-# Fix at source: disable checkpointing when compiling so has_recomputable_rng_ops is false (see PyTorch
-# functorch partitioners.py / issues around checkpoint + compile + RNG).
-COMPILE_PI0_MODEL = True
-USE_GRADIENT_CHECKPOINTING = not COMPILE_PI0_MODEL
+# --- Previous (custom) settings ---
+# PI0_NUM_EPOCHS = 250
+# PER_DEVICE_BATCH_SIZE = 16
+# GRADIENT_ACCUMULATION_STEPS = 4
+# COMPILE_PI0_MODEL = True
+# USE_GRADIENT_CHECKPOINTING = not COMPILE_PI0_MODEL
+# PI0_COMPILE_MODE = "max-autotune-no-cudagraphs"
+# DATASET_REPO = "auboI10"
+# DATASET_NAME = "data_w_shadow_h264_znear0001"
+# train_expert_only=True, chunk_size=100, n_action_steps=1
+# transform = AddGaussianNoise(...)
+# best_loss epoch save loop
 
-# torch.compile: "max-autotune" enables CUDA Graphs (faster steady-state, risk of overwrite errors).
-# Default is max-autotune-no-cudagraphs (stable). Enable graphs: PI0_CUDAGRAPHS=1 or PI0_COMPILE_MODE=max-autotune
-# (each micro-batch calls torch.compiler.cudagraph_mark_step_begin() to play nice with grad accumulation).
-PI0_COMPILE_MODE = "max-autotune-no-cudagraphs"
+# --- Official-aligned + VRAM profiles (31GB GPU: do NOT use fast without 40GB+) ---
+#   safe   — ckpt on, batch 15, no compile (you previously ~87% VRAM, stable)
+#   memory — ckpt on, micro_batch 6 × accum 4, autocast (lower peak VRAM)
+#   expert — ckpt on, train_expert_only (less VRAM, faster; slightly different recipe)
+#   fast   — compile + no ckpt: needs ~40GB+; OOM on 32GB even at batch 8
+# Override: PI0_TRAIN_PROFILE=memory python 5.train_pi.py
+PI0_TRAIN_PROFILE = os.environ.get("PI0_TRAIN_PROFILE", "safe")
 
-# VRAM: micro-batch per forward/backward; gradient accumulation matches previous 64 effective batch.
-# Tune PI0_BATCH_SIZE / PI0_GRAD_ACCUM if OOM persists (e.g. 4 and 16).
-PER_DEVICE_BATCH_SIZE = 16
-GRADIENT_ACCUMULATION_STEPS = 4
+TRAINING_STEPS = 100_000
+LOG_FREQ = 200
+SAVE_FREQ = 25_000
 
-DATASET_REPO = "auboI10"
-# DATASET_ROOT = "/home/ningyu/MyI10Tele/data2/"
-# DATASET_NAME = "data_w_shadow_x264"
-DATASET_NAME = "data_w_shadow_h264_znear0001"
+if PI0_TRAIN_PROFILE == "fast":
+    COMPILE_PI0_MODEL = True
+    USE_GRADIENT_CHECKPOINTING = False
+    PI0_COMPILE_MODE = "max-autotune-no-cudagraphs"
+    PER_DEVICE_BATCH_SIZE = 8
+    GRADIENT_ACCUMULATION_STEPS = 1
+    USE_AMP = False
+    TRAIN_EXPERT_ONLY = False
+elif PI0_TRAIN_PROFILE == "memory":
+    COMPILE_PI0_MODEL = False
+    USE_GRADIENT_CHECKPOINTING = True
+    PI0_COMPILE_MODE = "default"
+    PER_DEVICE_BATCH_SIZE = 6
+    GRADIENT_ACCUMULATION_STEPS = 4
+    USE_AMP = True
+    TRAIN_EXPERT_ONLY = False
+elif PI0_TRAIN_PROFILE == "expert":
+    COMPILE_PI0_MODEL = False
+    USE_GRADIENT_CHECKPOINTING = True
+    PI0_COMPILE_MODE = "default"
+    PER_DEVICE_BATCH_SIZE = 10
+    GRADIENT_ACCUMULATION_STEPS = 2
+    USE_AMP = True
+    TRAIN_EXPERT_ONLY = True
+else:  # safe
+    COMPILE_PI0_MODEL = False
+    USE_GRADIENT_CHECKPOINTING = True
+    PI0_COMPILE_MODE = "default"
+    PER_DEVICE_BATCH_SIZE = 15
+    GRADIENT_ACCUMULATION_STEPS = 1
+    USE_AMP = False
+    TRAIN_EXPERT_ONLY = False
+
+DATASET_REPO = "lerobot/aloha_sim_transfer_cube_human"
 DATASET_NAME = "aloha_sim_transfer_cube_human"
-DATASET_ROOT = f"/home/ningyu/MyI10Tele/{DATASET_NAME}/"
 DATASET_ROOT = os.path.expanduser(
     f"~/openpi-cache/huggingface/lerobot/lerobot/{DATASET_NAME}"
 )
+
+PI0_PRETRAINED_DIR: str | None = None
+pretrained_model_id, pi_pretrained_local_only = resolve_pi0_pretrained_path(
+    PI0_PRETRAINED_DIR,
+    allow_hub_download=_allow_hub,
+)
+SAVE_DIR = f".ckpt/{pretrained_model_id.split('/')[-1]}/{DATASET_NAME}"
 
 dataset_metadata = LeRobotDatasetMetadata(DATASET_REPO, root=DATASET_ROOT)
 input_features, output_features = MyPolicy.input_output_features_from_metadata(
     dataset_metadata
 )
 
-# --- Initialize PI0 model ---
-is_finetuning = True
-# Optional: folder with model.safetensors; otherwise env PI0_PRETRAINED / hub cache / pretrained/*.
-PI0_PRETRAINED_DIR: str | None = None
-
-pretrained_model_id, pi_pretrained_local_only = resolve_pi0_pretrained_path(
-    PI0_PRETRAINED_DIR,
-    allow_hub_download=_allow_hub,
+print(
+    f"Loading PI0 base: {pretrained_model_id} (local_files_only={pi_pretrained_local_only})"
 )
-
-if is_finetuning:
+cfg = PI0Config(
+    input_features=input_features,
+    output_features=output_features,
+    # LeRobot PI0 defaults; Aloha sim often uses empty_cameras=2 for 3-view layout (#1951).
+    chunk_size=50,
+    n_action_steps=50,
+    empty_cameras=2,
+    image_resolution=(224, 224),
+    dtype="bfloat16",
+    use_amp=USE_AMP,
+    compile_model=COMPILE_PI0_MODEL,
+    compile_mode=PI0_COMPILE_MODE if COMPILE_PI0_MODEL else "default",
+    gradient_checkpointing=USE_GRADIENT_CHECKPOINTING,
+    freeze_vision_encoder=True,
+    train_expert_only=TRAIN_EXPERT_ONLY,
+    device=str(device),
+)
+_effective_bs = PER_DEVICE_BATCH_SIZE * GRADIENT_ACCUMULATION_STEPS
+print(
+    f"PI0 train profile={PI0_TRAIN_PROFILE!r}  "
+    f"micro_batch={PER_DEVICE_BATCH_SIZE}  grad_accum={GRADIENT_ACCUMULATION_STEPS}  "
+    f"effective_batch={_effective_bs}  compile={cfg.compile_model}  "
+    f"grad_ckpt={cfg.gradient_checkpointing}  use_amp={cfg.use_amp}  "
+    f"train_expert_only={cfg.train_expert_only}"
+)
+print(
+    "PI0 config: "
+    f"chunk={cfg.chunk_size}, n_action_steps={cfg.n_action_steps}, "
+    f"empty_cameras={cfg.empty_cameras}, freeze_vision={cfg.freeze_vision_encoder}, "
+    f"train_expert_only={cfg.train_expert_only}"
+)
+if PI0_TRAIN_PROFILE == "fast":
     print(
-        f"Loading pretrained model: {pretrained_model_id} (local_files_only={pi_pretrained_local_only})"
+        "WARNING: profile=fast needs ~40GB+ VRAM (compile + no checkpointing). "
+        "On 32GB use safe / memory / expert instead."
     )
-    cfg = PI0Config(
-        input_features=input_features,
-        output_features=output_features,
-        compile_model=COMPILE_PI0_MODEL,
-        compile_mode=PI0_COMPILE_MODE if COMPILE_PI0_MODEL else "default",
-        dtype="bfloat16",
-        use_amp=True,
-        gradient_checkpointing=USE_GRADIENT_CHECKPOINTING,
-        train_expert_only=True,
-        chunk_size=100,
-        n_action_steps=1,
-        # PreTrainedConfig must stay JSON/YAML-serializable (draccus); use str not torch.device.
-        device=str(device),
+if COMPILE_PI0_MODEL:
+    print(
+        "torch.compile warmup: first ~20–50 steps are slow; steady-state is much faster."
     )
-    policy = PI0Policy.from_pretrained(
-        pretrained_model_id,
-        config=cfg,
-        dataset_stats=dataset_metadata.stats,
-        local_files_only=pi_pretrained_local_only,
+if USE_AMP:
+    print(
+        "use_amp=True: training forward runs under autocast(bfloat16). "
+        "Weights are already bf16; main VRAM saver is gradient_checkpointing + smaller micro-batch."
     )
-    print("Train expert only for fine-tuning.")
-    if COMPILE_PI0_MODEL and not USE_GRADIENT_CHECKPOINTING:
-        print(
-            "compile_model=True: gradient checkpointing disabled (functorch RNG functionalization "
-            "with recomputed flash-attention ops is unsupported); lower batch size if CUDA OOM."
-        )
-    if COMPILE_PI0_MODEL:
-        print(f"torch.compile mode: {PI0_COMPILE_MODE}")
-        if PI0_COMPILE_MODE == "max-autotune":
-            print(
-                "CUDA Graphs on (max-autotune). If you see CUDAGraph overwrite errors, use "
-                "PI0_CUDAGRAPHS=0 or PI0_COMPILE_MODE=max-autotune-no-cudagraphs."
-            )
-else:
-    print("Initializing PI0 model from scratch...")
-    cfg = PI0Config(
-        input_features=input_features,
-        output_features=output_features,
-        chunk_size=50,
-        n_action_steps=50,
-        dtype="bfloat16",
-        gradient_checkpointing=True,
-        use_amp=True,
-        device=str(device),
-    )
-    policy = PI0Policy(cfg, dataset_stats=dataset_metadata.stats)
+policy = PI0Policy.from_pretrained(
+    pretrained_model_id,
+    config=cfg,
+    dataset_stats=dataset_metadata.stats,
+    local_files_only=pi_pretrained_local_only,
+)
 
 delta_timestamps = resolve_delta_timestamps(cfg, dataset_metadata)
 policy.train()
 policy.to(device)
 print(
-    f"Model on {device}, param count: {sum(p.numel() for p in policy.parameters()) / 1e6:.1f}M"
-)
-transform = transforms.Compose(
-    [
-        AddGaussianNoise(mean=0.0, std=0.01),
-        transforms.Lambda(lambda x: x.clamp(0, 1)),
-    ]
+    f"Model on {device}, trainable params: "
+    f"{sum(p.numel() for p in policy.parameters() if p.requires_grad) / 1e6:.1f}M"
 )
 
-
-# --- Tokenizer for language conditioning ---
-# PI0 forward() expects batch["observation.language_tokens"] and
-# batch["observation.language_attention_mask"], produced by PaliGemma tokenizer.
 _tokenizer_src, _tokenizer_local = resolve_paligemma_tokenizer_path(
     allow_hub_download=_allow_hub_tokenizer,
 )
-print(f"Tokenizer from: {_tokenizer_src} (local_files_only={_tokenizer_local})")
+print(f"Tokenizer: {_tokenizer_src} (local_files_only={_tokenizer_local})")
 tokenizer = AutoTokenizer.from_pretrained(
     _tokenizer_src, local_files_only=_tokenizer_local
 )
 tokenizer.padding_side = "right"
-TOKENIZER_MAX_LENGTH = cfg.tokenizer_max_length  # 48
-pi_lang = MyPIPolicy(tokenizer, TOKENIZER_MAX_LENGTH)
+pi_lang = MyPIPolicy(tokenizer, cfg.tokenizer_max_length)
 
-# --- Dataset & DataLoader ---
 dataset = LeRobotDataset(
     DATASET_REPO,
     delta_timestamps=delta_timestamps,
     root=DATASET_ROOT,
-    image_transforms=transform,
+    image_transforms=None,
+    # image_transforms=transform,  # previous AddGaussianNoise pipeline
     video_backend="torchcodec",
 )
 
@@ -204,131 +214,87 @@ dataloader = torch.utils.data.DataLoader(
     persistent_workers=True,
     drop_last=True,
 )
-_effective_bs = PER_DEVICE_BATCH_SIZE * GRADIENT_ACCUMULATION_STEPS
 print(
-    f"Dataset size: {len(dataset)}, Batches per epoch: {len(dataloader)}, "
-    f"micro_batch={PER_DEVICE_BATCH_SIZE}, grad_accum={GRADIENT_ACCUMULATION_STEPS} "
-    f"(effective batch ≈ {_effective_bs})"
+    f"Dataset size: {len(dataset)}, micro-batches/epoch: {len(dataloader)}, "
+    f"target optimizer steps={TRAINING_STEPS}"
 )
 
-# --- Optimizer (follow openpi AdamW defaults) ---
-optimizer = torch.optim.AdamW(
-    filter(lambda p: p.requires_grad, policy.parameters()),
-    lr=cfg.optimizer_lr,
-    betas=cfg.optimizer_betas,
-    eps=cfg.optimizer_eps,
-    weight_decay=cfg.optimizer_weight_decay,
+optimizer_cfg = cfg.get_optimizer_preset()
+optimizer = optimizer_cfg.build(filter(lambda p: p.requires_grad, policy.parameters()))
+scheduler = cfg.get_scheduler_preset().build(
+    optimizer, num_training_steps=TRAINING_STEPS
 )
 
-# --- Training loop ---
-# Outer loop: full passes over the dataset (epochs).
-# tqdm matches ACT-style scripts: one unit per optimizer.step() (not per micro-batch),
-# so totals and it/s are comparable to DataLoader batch_size runs without grad accum.
-best_loss = float("inf")
-log_freq = 50
-save_dir = f".ckpt/{pretrained_model_id.split('/')[-1]}/{DATASET_NAME}"
-# --- WandB init (optional via env) ---
-WANDB_PROJECT = os.environ.get("WANDB_PROJECT", "aubo-i10-fintune")
-WANDB_ENTITY = os.environ.get("WANDB_ENTITY", "phil_ning")
-WANDB_MODE = os.environ.get("WANDB_MODE", None)  # online/offline/disabled
+_amp_ctx = (
+    torch.autocast(device_type=device.type, dtype=torch.bfloat16)
+    if USE_AMP and device.type == "cuda"
+    else nullcontext()
+)
+
+pbar = tqdm(total=TRAINING_STEPS, desc="Train PI0", dynamic_ncols=True, leave=True)
 _global_step = 0
-wandb.init(
-    project=WANDB_PROJECT,
-    entity=WANDB_ENTITY,
-    dir=save_dir,
-    config={
-        "batch_size": PER_DEVICE_BATCH_SIZE,
-        "grad_accum": GRADIENT_ACCUMULATION_STEPS,
-        "epochs": PI0_NUM_EPOCHS,
-    },
-    resume="allow",
-    mode=WANDB_MODE,
-)
-print(f"WandB initialized: {wandb.run.get_url()}")
+accum_step = 0
+optimizer.zero_grad(set_to_none=True)
 
-_dl_len = len(dataloader)
-_steps_per_epoch = _dl_len // GRADIENT_ACCUMULATION_STEPS + (
-    1 if _dl_len % GRADIENT_ACCUMULATION_STEPS else 0
-)
-_total_micro_batches = PI0_NUM_EPOCHS * _dl_len
-_total_optimizer_steps = PI0_NUM_EPOCHS * _steps_per_epoch
-pbar = tqdm(
-    total=_total_optimizer_steps, desc="Train PI0", dynamic_ncols=True, leave=True
-)
-print(
-    f"Training {PI0_NUM_EPOCHS} epoch(s); {_dl_len} micro-batches/epoch, "
-    f"grad_accum={GRADIENT_ACCUMULATION_STEPS} → {_steps_per_epoch} optimizer steps/epoch "
-    f"({_total_optimizer_steps} total, tqdm). {_total_micro_batches} forwards total. "
-    f"Set PI0_NUM_EPOCHS to reduce wall time."
-)
-
-for epoch in range(PI0_NUM_EPOCHS):
-    epoch_loss = 0.0
-    optimizer.zero_grad(set_to_none=True)
-    accum_step = 0
-
+while _global_step < TRAINING_STEPS:
     for batch in dataloader:
         batch = MyPolicy.move_batch_to_device(batch, device)
         batch = pi_lang.inject_language_tokens(batch, device)
 
         if COMPILE_PI0_MODEL:
-            # Separates CUDA graph steps when Inductor cudagraphs are on (e.g. PI0_COMPILE_MODE=max-autotune).
             torch.compiler.cudagraph_mark_step_begin()
 
-        loss, loss_dict = policy(batch)
+        with _amp_ctx:
+            loss, _ = policy(batch)
         scaled = loss / GRADIENT_ACCUMULATION_STEPS
         scaled.backward()
-
         accum_step += 1
-        epoch_loss += loss.item()
-        pbar.set_postfix(
-            epoch=f"{epoch + 1}/{PI0_NUM_EPOCHS}", Loss=f"{loss.item():.4f}"
-        )
 
-        if accum_step >= GRADIENT_ACCUMULATION_STEPS:
-            torch.nn.utils.clip_grad_norm_(
-                policy.parameters(), max_norm=cfg.optimizer_grad_clip_norm
-            )
-            optimizer.step()
-            _global_step += 1
-            wandb.log(
-                {"train/loss": loss.item(), "train/epoch": epoch + 1},
-                step=_global_step,
-            )
-            optimizer.zero_grad(set_to_none=True)
-            accum_step = 0
-            pbar.update(1)
+        if accum_step < GRADIENT_ACCUMULATION_STEPS:
+            continue
 
-    if accum_step > 0:
-        # Partial last group: backward used loss/GRAD_ACCUM each time; rescale so mean matches m micro-batches.
-        _partial_scale = GRADIENT_ACCUMULATION_STEPS / accum_step
-        for p in policy.parameters():
-            if p.grad is not None:
-                p.grad.mul_(_partial_scale)
         torch.nn.utils.clip_grad_norm_(
-            policy.parameters(), max_norm=cfg.optimizer_grad_clip_norm
+            policy.parameters(), max_norm=optimizer_cfg.grad_clip_norm
         )
         optimizer.step()
+        scheduler.step()
         _global_step += 1
-        wandb.log(
-            {
-                "train/epoch_loss": epoch_loss / len(dataloader),
-                "train/epoch": epoch + 1,
-            },
-            step=_global_step,
-        )
+        accum_step = 0
         optimizer.zero_grad(set_to_none=True)
+
+        pbar.set_postfix(
+            step=f"{_global_step}/{TRAINING_STEPS}",
+            loss=f"{loss.item():.4f}",
+            lr=f"{scheduler.get_last_lr()[0]:.2e}",
+        )
         pbar.update(1)
 
-    avg_loss = epoch_loss / len(dataloader)
-    if (epoch + 1) % log_freq == 0 or epoch == PI0_NUM_EPOCHS - 1:
-        print(f"Epoch {epoch + 1}/{PI0_NUM_EPOCHS}, avg_loss: {avg_loss:.4f}")
+        if _global_step % SAVE_FREQ == 0 or _global_step == TRAINING_STEPS:
+            ckpt_dir = Path(SAVE_DIR) / f"checkpoint_{_global_step:06d}"
+            policy.save_pretrained(ckpt_dir)
+            print(f"Saved checkpoint to {ckpt_dir}")
 
-    if avg_loss < best_loss:
-        best_loss = avg_loss
-        policy.save_pretrained(save_dir)
-        # upload artifact (if enabled)
-        print(f"Saved best model to {save_dir} (Loss: {best_loss:.4f})")
+        if _global_step % LOG_FREQ == 0:
+            print(
+                f"Step {_global_step}/{TRAINING_STEPS}  loss={loss.item():.4f}  "
+                f"lr={scheduler.get_last_lr()[0]:.2e}"
+            )
+
+        if _global_step >= TRAINING_STEPS:
+            break
 
 pbar.close()
-print("Training complete!")
+policy.save_pretrained(SAVE_DIR)
+print(f"Training complete. Final weights: {SAVE_DIR}")
+
+# --- Previous training loop (epoch-based, best-loss save, compile + grad accum) ---
+# wandb.init(project=WANDB_PROJECT, entity=WANDB_ENTITY, dir=save_dir, ...)
+# for epoch in range(PI0_NUM_EPOCHS):
+#     for batch in dataloader:
+#         batch = pi_lang.inject_language_tokens(batch, device)
+#         if COMPILE_PI0_MODEL:
+#             torch.compiler.cudagraph_mark_step_begin()
+#         loss, loss_dict = policy(batch)
+#         ...
+#     if avg_loss < best_loss:
+#         policy.save_pretrained(save_dir)
