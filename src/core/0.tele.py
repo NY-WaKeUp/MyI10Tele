@@ -8,26 +8,30 @@ import numpy as np
 import cv2
 
 from core.my_env import MyEnv
+from core.dataset_config import (
+    ACTION_LABEL,
+    REPO_NAME,
+    TASK_NAME,
+    XML_PATH,
+    dataset_root,
+)
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
-
-REPO_NAME = "auboI10"
+ROOT = dataset_root()
 NUM_DEMO = 50
-ROOT = os.path.expanduser("~/code_before_paper/MyI10Tele/data_auboI10_v2")
-TASK_NAME = "Put cube on the black platform"
-XML_PATH = os.path.expanduser(
-    "~/code_before_paper/MyI10Tele/assets/aubo_i10_inspire/myscene.xml"
-)
+HZ = 20
 
 
 def main() -> None:
     # macOS spawn + GLFW: subprocess image writers re-import this file; keep processes off.
     image_writer_processes = 0 if sys.platform == "darwin" else 5
 
-    # Keyboard teleop drives ee_pose; labels stored as joint qpos (pre/post) for openpi.
+    # Keyboard teleop: ee_pose deltas. observation.state = pre-step qpos; actions = post-step label.
     pn_env = MyEnv(XML_PATH, seed=42, action_type="ee_pose", state_type="qpos")
     print(f"action_type: {pn_env.action_type}")
     print(f"state_type: {pn_env.state_type}")
+    print(f"ACTION_LABEL (stored in dataset): {ACTION_LABEL}")
+    print(f"dataset root: {ROOT}")
 
     create_new = True
     if os.path.exists(ROOT):
@@ -46,7 +50,7 @@ def main() -> None:
             repo_id=REPO_NAME,
             root=ROOT,
             robot_type="aubo_i10_inspire",
-            fps=20,
+            fps=HZ,
             vcodec=_vcodec,
             streaming_encoding=True,
             encoder_queue_maxsize=90,
@@ -89,7 +93,7 @@ def main() -> None:
     record_flag = False
     while pn_env.env.is_viewer_alive() and episode_id < NUM_DEMO:
         pn_env.step_env()
-        if pn_env.env.loop_every(HZ=20):
+        if pn_env.env.loop_every(HZ=HZ):
             done = pn_env.check_success()
             if done:
                 # macOS: avoid ProcessPoolExecutor in save_episode (spawn + GLFW); streaming path is already fast.
@@ -109,7 +113,7 @@ def main() -> None:
                     dataset.clear_episode_buffer()
                 record_flag = False
                 continue
-            pre_state = pn_env.get_joint_state()
+            pre_state = np.array(pn_env.get_joint_state(), dtype=np.float32)
             agent_image, wrist_image = pn_env.grab_image()
             agent_image = cv2.resize(
                 agent_image, (256, 256), interpolation=cv2.INTER_AREA
@@ -117,14 +121,21 @@ def main() -> None:
             wrist_image = cv2.resize(
                 wrist_image, (256, 256), interpolation=cv2.INTER_AREA
             )
-            post_state = pn_env.step(actions)
+            pn_env.step(actions)
+            pn_env.step_env()
+            if ACTION_LABEL == "qpos":
+                post_action = np.array(pn_env.get_joint_state(), dtype=np.float32)
+            elif ACTION_LABEL == "ee_pose":
+                post_action = np.array(pn_env.get_ee_pose(), dtype=np.float32)
+            else:
+                raise ValueError(f"unknown ACTION_LABEL: {ACTION_LABEL}")
             if record_flag:
                 dataset.add_frame(
                     {
                         "observation.image": agent_image,
                         "observation.wrist_image": wrist_image,
                         "observation.state": pre_state,
-                        "actions": post_state,
+                        "actions": post_action,
                         "obj_init": pn_env.obj_init_pose,
                         "task": TASK_NAME,
                     }

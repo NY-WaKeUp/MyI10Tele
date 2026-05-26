@@ -1,0 +1,18 @@
+{
+  "host": "localhost",
+  "port": 8000,
+  "resize_size": 256,
+  "replan_steps": 5,
+  "prompt": "Put cube on the black platform",
+  "xml_path": "/home/ningyu/MyI10Tele/assets/aubo_i10_inspire/myscene.xml",
+  "seed": 42,
+  "num_episodes": 20,
+  "max_steps": 600,
+  "video_dir": "./episode_videos_openpi",
+  "action_type": "qpos",
+  "trace_dir": "./openpi_eval_trace",
+  "trace_episodes": 3,
+  "trace_save_images": true,
+  "trace_analyze_only": false,
+  "teleop_render": false
+}
