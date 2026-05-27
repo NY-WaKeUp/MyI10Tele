@@ -30,10 +30,24 @@ def main() -> None:
     # macOS spawn + GLFW: subprocess image writers re-import this file; keep processes off.
     image_writer_processes = 0 if sys.platform == "darwin" else 5
 
+<<<<<<< HEAD
+    # Keyboard teleop uses ee deltas; dataset actions column uses ACTION_LABEL (qpos or ee_pose).
+    pn_env = MyEnv(
+        XML_PATH,
+        seed=42,
+        action_type="ee_pose",
+        state_type="qpos",
+        ee_pose_command="delta",
+    )
+    print(f"action_type: {pn_env.action_type}")
+    print(f"state_type: {pn_env.state_type}")
+    print(f"ee_pose_command: {pn_env.ee_pose_command}")
+=======
     # Keyboard teleop: ee_pose deltas. observation.state = pre-step qpos; actions = post-step label.
     pn_env = MyEnv(XML_PATH, seed=42, action_type="ee_pose", state_type="qpos")
     print(f"action_type: {pn_env.action_type}")
     print(f"state_type: {pn_env.state_type}")
+>>>>>>> c9232a6b004c33c2cb84c96cdcc68f06f6d37360
     print(f"ACTION_LABEL (stored in dataset): {ACTION_LABEL}")
     print(f"dataset root: {ROOT}")
 
@@ -54,6 +68,7 @@ def main() -> None:
             repo_id=REPO_NAME,
             root=ROOT,
             robot_type="aubo_i10_inspire",
+            fps=HZ,
             fps=HZ,
             vcodec=_vcodec,
             streaming_encoding=True,
@@ -97,6 +112,7 @@ def main() -> None:
     record_flag = False
     while pn_env.env.is_viewer_alive() and episode_id < NUM_DEMO:
         pn_env.step_env()
+        if pn_env.env.loop_every(HZ=HZ):
         if pn_env.env.loop_every(HZ=HZ):
             done = pn_env.check_success()
             if done:

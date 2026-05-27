@@ -58,3 +58,6 @@ src/core/videos/
 episode_videos_openpi/
 
 pretrained/
+
+openpi_eval_trace_v2/
+openpi_eval_trace/
