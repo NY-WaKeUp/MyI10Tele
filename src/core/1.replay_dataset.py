@@ -7,15 +7,16 @@ import matplotlib.pyplot as plt
 import torch
 from matplotlib.widgets import Slider
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
+from core.dataset_config import ACTION_LABEL, REPO_NAME, dataset_root
 
-# 1. Load the dataset
-REPO_NAME = "auboI10"
-# ROOT = "/Users/ningyu/code_before_paper/MyI10Tele/data_no_shadow"
-# ROOT = "/Users/ningyu/code_before_paper/MyI10Tele/data_no_shadow_x264"
-# ROOT = "/Users/ningyu/code_before_paper/MyI10Tele/data_w_shadow_h264_znear0001"
-ROOT = os.path.expanduser("~/code_before_paper/MyI10Tele/data_auboI10_v2")
+ROOT = dataset_root()
+ACTION_DIM_LABELS = (
+    ["x", "y", "z", "roll", "pitch", "yaw", "gripper"]
+    if ACTION_LABEL == "ee_pose"
+    else [f"j{i}" for i in range(6)] + ["gripper"]
+)
 
-
+print(f"ACTION_LABEL: {ACTION_LABEL}")
 print(f"Loading dataset from {ROOT}...")
 dataset = LeRobotDataset(REPO_NAME, root=ROOT)
 print(f"Total episodes: {dataset.num_episodes}")
@@ -61,10 +62,9 @@ actions_diff = np.diff(actions, axis=0)
 # --- 2. 绘制轨迹分析图 ---
 fig_plot, axs = plt.subplots(3, 1, figsize=(12, 10), sharex=True)
 
-# 1. 机械臂动作 (Dim 0-5)
 for i in range(6):
-    axs[0].plot(actions[:, i], label=f"Dim {i}")
-axs[0].set_title(f"Robot Arm Actions (Episode {EPISODE_ID})")
+    axs[0].plot(actions[:, i], label=ACTION_DIM_LABELS[i])
+axs[0].set_title(f"Actions [{ACTION_LABEL}] (Episode {EPISODE_ID})")
 axs[0].set_ylabel("Value")
 axs[0].legend(loc="upper right", ncol=3)
 axs[0].grid(True)
