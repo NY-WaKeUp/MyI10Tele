@@ -137,11 +137,16 @@ class MyEnv:
         seed: int | None = None,
         ik_damping: float = 1e-3,
         ik_gain: float = 0.6,
+        # ee_pose only: "delta" = keyboard teleop (dpos/drot per step); "absolute" = policy target pose.
+        ee_pose_command: str = "delta",
     ) -> None:
         model_path = xml_path
         self.env = MuJoCoParserClass(name="myenv", rel_xml_path=model_path)
         self.action_type = action_type
         self.state_type = state_type
+        if ee_pose_command not in ("delta", "absolute"):
+            raise ValueError(f"ee_pose_command must be 'delta' or 'absolute', got {ee_pose_command!r}")
+        self.ee_pose_command = ee_pose_command
         self.joint_names = [
             "shoulder_joint",
             "upperArm_joint",
@@ -291,15 +296,23 @@ class MyEnv:
         """
         if self.action_type == "ee_pose":
             q = self.env.get_qpos_joints(joint_names=self.joint_names)
-            self.p0 += action[:3]
-            self.R0 = self.R0.dot(rpy2r(action[3:6]))
+            if self.ee_pose_command == "absolute":
+                p_trgt = np.asarray(action[:3], dtype=np.float64)
+                R_trgt = rpy2r(action[3:6])
+                self.p0 = p_trgt.copy()
+                self.R0 = R_trgt.copy()
+            else:
+                self.p0 += action[:3]
+                self.R0 = self.R0.dot(rpy2r(action[3:6]))
+                p_trgt = self.p0
+                R_trgt = self.R0
             q, ik_err_stack, ik_info = solve_ik(
                 env=self.env,
                 joint_names_for_ik=self.joint_names,
                 body_name_trgt="i10_inspire_flange_link",
                 q_init=q,
-                p_trgt=self.p0,
-                R_trgt=self.R0,
+                p_trgt=p_trgt,
+                R_trgt=R_trgt,
                 max_ik_tick=50,
                 ik_stepsize=1.0,
                 ik_eps=1e-2,

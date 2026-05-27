@@ -26,10 +26,17 @@ def main() -> None:
     # macOS spawn + GLFW: subprocess image writers re-import this file; keep processes off.
     image_writer_processes = 0 if sys.platform == "darwin" else 5
 
-    # Keyboard teleop: ee_pose deltas. observation.state = pre-step qpos; actions = post-step label.
-    pn_env = MyEnv(XML_PATH, seed=42, action_type="ee_pose", state_type="qpos")
+    # Keyboard teleop uses ee deltas; dataset actions column uses ACTION_LABEL (qpos or ee_pose).
+    pn_env = MyEnv(
+        XML_PATH,
+        seed=42,
+        action_type="ee_pose",
+        state_type="qpos",
+        ee_pose_command="delta",
+    )
     print(f"action_type: {pn_env.action_type}")
     print(f"state_type: {pn_env.state_type}")
+    print(f"ee_pose_command: {pn_env.ee_pose_command}")
     print(f"ACTION_LABEL (stored in dataset): {ACTION_LABEL}")
     print(f"dataset root: {ROOT}")
 
