@@ -19,6 +19,11 @@ from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
 ROOT = dataset_root()
 NUM_DEMO = 50
+# Keep loop rate and LeRobot fps identical (pi0 / ACT assume dataset timestamps match this).
+HZ = 20
+# Skip frames where IK barely moved the arm; still log gripper toggles.
+MIN_ARM_DQ_RAD = 1e-4
+MIN_GRIPPER_DQ = 0.05
 
 
 def main() -> None:
@@ -49,7 +54,7 @@ def main() -> None:
             repo_id=REPO_NAME,
             root=ROOT,
             robot_type="aubo_i10_inspire",
-            fps=20,
+            fps=HZ,
             vcodec=_vcodec,
             streaming_encoding=True,
             encoder_queue_maxsize=90,
@@ -92,7 +97,7 @@ def main() -> None:
     record_flag = False
     while pn_env.env.is_viewer_alive() and episode_id < NUM_DEMO:
         pn_env.step_env()
-        if pn_env.env.loop_every(HZ=20):
+        if pn_env.env.loop_every(HZ=HZ):
             done = pn_env.check_success()
             if done:
                 # macOS: avoid ProcessPoolExecutor in save_episode (spawn + GLFW); streaming path is already fast.
@@ -122,13 +127,16 @@ def main() -> None:
             )
             pn_env.step(actions)
             pn_env.step_env()
+            post_q = np.array(pn_env.get_joint_state(), dtype=np.float32)
             if ACTION_LABEL == "qpos":
-                post_action = np.array(pn_env.get_joint_state(), dtype=np.float32)
+                post_action = post_q
             elif ACTION_LABEL == "ee_pose":
                 post_action = np.array(pn_env.get_ee_pose(), dtype=np.float32)
             else:
                 raise ValueError(f"unknown ACTION_LABEL: {ACTION_LABEL}")
-            if record_flag:
+            dq_arm = float(np.linalg.norm(post_q[:6] - pre_state[:6]))
+            dq_grip = float(abs(post_q[6] - pre_state[6]))
+            if record_flag and (dq_arm > MIN_ARM_DQ_RAD or dq_grip > MIN_GRIPPER_DQ):
                 dataset.add_frame(
                     {
                         "observation.image": agent_image,
