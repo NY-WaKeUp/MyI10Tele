@@ -19,7 +19,11 @@ from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
 ROOT = dataset_root()
 NUM_DEMO = 50
+# Keep loop rate and LeRobot fps identical (pi0 / ACT assume dataset timestamps match this).
 HZ = 20
+# Skip frames where IK barely moved the arm; still log gripper toggles.
+MIN_ARM_DQ_RAD = 1e-4
+MIN_GRIPPER_DQ = 0.05
 
 
 def main() -> None:
@@ -130,13 +134,16 @@ def main() -> None:
             )
             pn_env.step(actions)
             pn_env.step_env()
+            post_q = np.array(pn_env.get_joint_state(), dtype=np.float32)
             if ACTION_LABEL == "qpos":
-                post_action = np.array(pn_env.get_joint_state(), dtype=np.float32)
+                post_action = post_q
             elif ACTION_LABEL == "ee_pose":
                 post_action = np.array(pn_env.get_ee_pose(), dtype=np.float32)
             else:
                 raise ValueError(f"unknown ACTION_LABEL: {ACTION_LABEL}")
-            if record_flag:
+            dq_arm = float(np.linalg.norm(post_q[:6] - pre_state[:6]))
+            dq_grip = float(abs(post_q[6] - pre_state[6]))
+            if record_flag and (dq_arm > MIN_ARM_DQ_RAD or dq_grip > MIN_GRIPPER_DQ):
                 dataset.add_frame(
                     {
                         "observation.image": agent_image,

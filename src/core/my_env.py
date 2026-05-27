@@ -457,18 +457,19 @@ class MyEnv:
         # char = self.env.get_key_pressed()
         dpos = np.zeros(3)
         drot = np.eye(3)
+        _dpos_step = 0.004  # m per teleop frame at HZ in 0.tele.py (was 0.002)
         if self.env.is_key_pressed_repeat(key=glfw.KEY_S):
-            dpos += np.array([-0.002, 0.0, 0.0])
+            dpos += np.array([-_dpos_step, 0.0, 0.0])
         if self.env.is_key_pressed_repeat(key=glfw.KEY_W):
-            dpos += np.array([0.002, 0.0, 0.0])
+            dpos += np.array([_dpos_step, 0.0, 0.0])
         if self.env.is_key_pressed_repeat(key=glfw.KEY_A):
-            dpos += np.array([0.0, 0.002, 0.0])
+            dpos += np.array([0.0, _dpos_step, 0.0])
         if self.env.is_key_pressed_repeat(key=glfw.KEY_D):
-            dpos += np.array([0.0, -0.002, 0.0])
+            dpos += np.array([0.0, -_dpos_step, 0.0])
         if self.env.is_key_pressed_repeat(key=glfw.KEY_R):
-            dpos += np.array([0.0, 0.0, 0.002])
+            dpos += np.array([0.0, 0.0, _dpos_step])
         if self.env.is_key_pressed_repeat(key=glfw.KEY_F):
-            dpos += np.array([0.0, 0.0, -0.002])
+            dpos += np.array([0.0, 0.0, -_dpos_step])
         if self.env.is_key_pressed_repeat(key=glfw.KEY_I):
             drot = rotation_matrix(angle=0.1 * 0.3, direction=[0.0, 1.0, 0.0])[:3, :3]
         if self.env.is_key_pressed_repeat(key=glfw.KEY_K):
