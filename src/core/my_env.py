@@ -61,9 +61,13 @@ RESET_EE_RPY_RAD = np.array([np.pi, 0.0, 0.0], dtype=np.float64)
 CUBE_SPAWN_XYZ = np.array([0.3211248850767859, -1.1, 0.255], dtype=np.float64)
 TARGET_SPAWN_XYZ = np.array([0.1211248850767859, -1.1, 0.238], dtype=np.float64)
 # Randomize around that pose (meters). z fixed on table; tighten/loosen as needed.
-CUBE_SAMPLE_DX = 0.08
-CUBE_SAMPLE_DY = 0.05
+CUBE_SAMPLE_DX = 0.06
+CUBE_SAMPLE_DY = 0.02
 CUBE_SAMPLE_DZ = 0.0
+# front_object_table: center y=-1, half y=0.2 -> y in [-1.2, -0.8]
+TABLE_Y_MIN = -1.2
+TABLE_Y_MAX = -0.8
+CUBE_SPAWN_TABLE_XY_MARGIN = 0.04
 
 TARGET_SAMPLE_DX = 0.05
 TARGET_SAMPLE_DY = 0.05
@@ -137,6 +141,11 @@ class MyEnv:
         seed: int | None = None,
         ik_damping: float = 1e-3,
         ik_gain: float = 0.6,
+        ee_ik_max_tick: int = 200,
+        ee_ik_stepsize: float = 2.0,
+        ee_ik_eps: float = 1e-3,
+        ee_ik_th_rad: float = np.radians(3.0),
+        ee_ik_err_th: float = 5e-3,
         # ee_pose only: "delta" = keyboard teleop (dpos/drot per step); "absolute" = policy target pose.
         ee_pose_command: str = "delta",
     ) -> None:
@@ -144,6 +153,13 @@ class MyEnv:
         self.env = MuJoCoParserClass(name="myenv", rel_xml_path=model_path)
         self.action_type = action_type
         self.state_type = state_type
+        self.ik_damping = ik_damping
+        self.ik_gain = ik_gain
+        self.ee_ik_max_tick = ee_ik_max_tick
+        self.ee_ik_stepsize = ee_ik_stepsize
+        self.ee_ik_eps = ee_ik_eps
+        self.ee_ik_th_rad = ee_ik_th_rad
+        self.ee_ik_err_th = ee_ik_err_th
         if ee_pose_command not in ("delta", "absolute"):
             raise ValueError(f"ee_pose_command must be 'delta' or 'absolute', got {ee_pose_command!r}")
         self.ee_pose_command = ee_pose_command
@@ -225,6 +241,11 @@ class MyEnv:
             xy_margin=0.0,
             rng=self._layout_rng,
         )
+        m = CUBE_SPAWN_TABLE_XY_MARGIN
+        obj_xyzs[:, 0] = np.clip(obj_xyzs[:, 0], -1.0 + m, 1.0 - m)
+        obj_xyzs[:, 1] = np.clip(
+            obj_xyzs[:, 1], TABLE_Y_MIN + m, TABLE_Y_MAX - m
+        )
         cube_R_samples: list[np.ndarray] = []
         for obj_idx in range(n_obj):
             Ri = sample_cube_orientation_R(self._layout_rng)
@@ -282,6 +303,8 @@ class MyEnv:
         print("DONE INITIALIZATION")
         self.gripper_close = True
         self.past_chars = []
+        self.last_ik_err = 0.0
+        self.last_ik_err_stack = np.zeros(6, dtype=np.float64)
 
     def step(self, action):
         """
@@ -313,13 +336,16 @@ class MyEnv:
                 q_init=q,
                 p_trgt=p_trgt,
                 R_trgt=R_trgt,
-                max_ik_tick=50,
-                ik_stepsize=1.0,
-                ik_eps=1e-2,
-                ik_th=np.radians(5.0),
+                max_ik_tick=self.ee_ik_max_tick,
+                ik_err_th=self.ee_ik_err_th,
+                ik_stepsize=self.ee_ik_stepsize,
+                ik_eps=self.ee_ik_eps,
+                ik_th=self.ee_ik_th_rad,
                 render=False,
                 verbose_warning=False,
             )
+            self.last_ik_err_stack = np.asarray(ik_err_stack, dtype=np.float64)
+            self.last_ik_err = float(np.linalg.norm(self.last_ik_err_stack))
         elif self.action_type == "delta_qpos":
             q = action[:-1] + self.last_q
         elif self.action_type == "qpos":
@@ -457,7 +483,8 @@ class MyEnv:
         # char = self.env.get_key_pressed()
         dpos = np.zeros(3)
         drot = np.eye(3)
-        _dpos_step = 0.004  # m per teleop frame at HZ in 0.tele.py (was 0.002)
+        # 20 Hz teleop; keep in sync with eval_action_guard max_xyz_step (0.005).
+        _dpos_step = 0.005
         if self.env.is_key_pressed_repeat(key=glfw.KEY_S):
             dpos += np.array([-_dpos_step, 0.0, 0.0])
         if self.env.is_key_pressed_repeat(key=glfw.KEY_W):

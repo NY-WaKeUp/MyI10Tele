@@ -45,6 +45,11 @@ from pathlib import Path
 import numpy as np
 
 from core.dataset_config import policy_ee_pose_command
+from core.eval_action_guard import (
+    clamp_absolute_ee_action,
+    cube_on_table,
+    cube_pose,
+)
 
 # MuJoCo viewer display (change if needed)
 os.environ.setdefault("DISPLAY", ":51.0")
@@ -220,12 +225,21 @@ class EpisodeTrace:
                 arm_range_ref = qpos_pre
             elif action_type == "ee_pose":
                 ee_pre_st = np.stack(self.ee_pre) if self.ee_pre else np.zeros((0, 7), dtype=np.float32)
-                ee_post_st = np.stack(self.ee_post) if self.ee_post else np.zeros((0, 7), dtype=np.float32)
-                arm_delta = _pose_delta_batch(actions, ee_pre_st)
-                arm_track_err = np.linalg.norm(_pose_delta_batch(actions, ee_post_st), axis=1)
-                arm_range_ref = ee_pre_st
-                ee_motion_norm = np.linalg.norm(_pose_delta_batch(ee_post_st, ee_pre_st), axis=1)
-                ee_xyz_cmd_norm = np.linalg.norm(arm_delta[:, :3], axis=1)
+                # Use control-cycle window metrics:
+                # command at k is compared against ee_pre[k], and tracking against ee_pre[k+1]
+                # (state at the next 20Hz control tick after command execution/settling).
+                if len(ee_pre_st) >= 2:
+                    arm_delta = _pose_delta_batch(actions[:-1], ee_pre_st[:-1])
+                    arm_track_err = np.linalg.norm(_pose_delta_batch(actions[:-1], ee_pre_st[1:]), axis=1)
+                    ee_motion_norm = np.linalg.norm(_pose_delta_batch(ee_pre_st[1:], ee_pre_st[:-1]), axis=1)
+                    ee_xyz_cmd_norm = np.linalg.norm(arm_delta[:, :3], axis=1)
+                    arm_range_ref = ee_pre_st[:-1]
+                else:
+                    arm_delta = np.zeros((0, 6), dtype=np.float32)
+                    arm_track_err = np.zeros((0,), dtype=np.float32)
+                    ee_motion_norm = np.zeros((0,), dtype=np.float32)
+                    ee_xyz_cmd_norm = np.zeros((0,), dtype=np.float32)
+                    arm_range_ref = np.zeros((0, 7), dtype=np.float32)
             else:
                 raise ValueError(f"Unknown action_type: {action_type}")
             if action_type == "qpos":
@@ -355,8 +369,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--replan-steps",
         type=int,
-        default=5,
-        help="Execute this many actions from each chunk before re-inferring (action_horizon=10)",
+        default=1,
+        help="Actions per chunk before re-infer (1 = safest for ee_pose; horizon is 10)",
     )
     parser.add_argument("--prompt", type=str, default=TASK_NAME, help="Language instruction for the policy")
     parser.add_argument("--xml-path", type=str, default=XML_PATH, help="MuJoCo scene XML")
@@ -403,6 +417,29 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Match 0.tele.py viewer overlays (camera panels + key hints)",
     )
+    parser.add_argument(
+        "--no-ee-guard",
+        action="store_true",
+        help="Disable per-step EE clamp (ee_pose only; default is guard ON)",
+    )
+    parser.add_argument(
+        "--max-ee-xyz-step",
+        type=float,
+        default=0.005,
+        help="Max |Δxyz| per control step when EE guard is on (meters; ~teleop dpos)",
+    )
+    parser.add_argument(
+        "--max-ee-rpy-step",
+        type=float,
+        default=0.08,
+        help="Max |Δrpy| per control step when EE guard is on (radians)",
+    )
+    parser.add_argument(
+        "--log-cube-every",
+        type=int,
+        default=25,
+        help="Print cube xyz every N steps; 0 = only when cube leaves the table",
+    )
     return parser.parse_args()
 
 
@@ -434,10 +471,17 @@ def main() -> None:
         state_type="qpos",
         ee_pose_command=ee_cmd,
     )
+    ee_guard = args.action_type == "ee_pose" and not args.no_ee_guard
     print(
         f"action_type: {env.action_type}, state_type: {env.state_type}, "
         f"ee_pose_command: {env.ee_pose_command}"
     )
+    if ee_guard:
+        print(
+            f"EE guard ON: max_xyz_step={args.max_ee_xyz_step} max_rpy_step={args.max_ee_rpy_step}"
+        )
+    elif args.action_type == "ee_pose":
+        print("EE guard OFF (--no-ee-guard)")
 
     if trace_dir is not None:
         trace_dir.mkdir(parents=True, exist_ok=True)
@@ -461,6 +505,8 @@ def main() -> None:
         step = 0
         episode_success = False
         video_recorder.start_episode(episode)
+
+        cube_fell_logged = False
 
         do_trace = trace_dir is not None and (
             args.trace_episodes == 0 or episode < args.trace_episodes
@@ -530,6 +576,18 @@ def main() -> None:
                     action_plan.append(np.asarray(chunk[i, :7], dtype=np.float64))
 
             action_np = action_plan.popleft()
+            if ee_guard:
+                if ee_pre is None:
+                    ee_pre = _as_state(env.get_ee_pose())
+                action_np, clipped = clamp_absolute_ee_action(
+                    action_np,
+                    ee_pre,
+                    max_xyz_step=args.max_ee_xyz_step,
+                    max_rpy_step=args.max_ee_rpy_step,
+                )
+                if clipped and step % 10 == 0:
+                    print(f"[ep {episode + 1} step {step}] EE guard clipped policy target")
+
             env.step(action_np)
             # Advance sim so state_post matches training "actions = q after step".
             env.step_env()
@@ -551,6 +609,20 @@ def main() -> None:
 
             env.render(teleop=args.teleop_render)
             step += 1
+
+            p_cube = cube_pose(env)
+            on_table = cube_on_table(p_cube)
+            if args.log_cube_every > 0 and step % args.log_cube_every == 0:
+                print(
+                    f"[ep {episode + 1} step {step}] cube xyz={p_cube.round(4)} on_table={on_table}",
+                    flush=True,
+                )
+            if not on_table and not cube_fell_logged:
+                cube_fell_logged = True
+                print(
+                    f"[ep {episode + 1} step {step}] cube left table: xyz={p_cube.round(4)}",
+                    flush=True,
+                )
 
             if env.check_success():
                 print(f"Episode {episode + 1}: success in {step} steps")

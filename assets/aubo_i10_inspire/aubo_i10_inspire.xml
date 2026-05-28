@@ -12,9 +12,10 @@
   </default> -->
   <default>
     <default class="arm_joint">
-      <joint range="-6.28319 6.28319" armature="0.1" damping="200.0"/>
-      <!-- kv on <position> requires MuJoCo >= 3.0; use joint damping below on 2.x -->
-      <position kp="10000" kv="1000" forcerange="-10000 10000" ctrlrange="-6.28319 6.28319"/>
+      <!-- MuJoCo 2.x replacement for actuator kv:
+           use moderate joint viscous damping + position servo gain. -->
+      <joint range="-6.28319 6.28319" armature="0.1" damping="20.0"/>
+      <position kp="6000" forcerange="-10000 10000" ctrlrange="-6.28319 6.28319"/>
     </default>
     <default class="gripper">
       <joint armature="0.1" damping="10.0" axis="-1 0 0"/>
