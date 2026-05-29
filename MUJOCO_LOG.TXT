@@ -1,0 +1,3 @@
+Fri May 29 21:25:58 2026
+WARNING: mju_openResource: unknown file '/home/ningyu/MyI10Tele/assets/aubo_i10_inspire/myscene.xml'
+

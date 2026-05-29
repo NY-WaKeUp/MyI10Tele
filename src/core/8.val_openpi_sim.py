@@ -55,7 +55,7 @@ from core.eval_action_guard import (
 os.environ.setdefault("DISPLAY", ":51.0")
 
 TASK_NAME = "Put cube on the black platform"
-XML_PATH = "/home/ningyu/MyI10Tele/assets/aubo_i10_inspire/myscene.xml"
+XML_PATH = os.path.expanduser("~/MyI10Tele/assets/aubo_i10_inspire/myscene.xml")
 HZ = 20
 
 
@@ -84,7 +84,10 @@ def _pose_delta_6d(target: np.ndarray, ref: np.ndarray) -> np.ndarray:
 
 
 def _pose_delta_batch(targets: np.ndarray, refs: np.ndarray) -> np.ndarray:
-    d = np.asarray(targets, dtype=np.float32)[:, :6] - np.asarray(refs, dtype=np.float32)[:, :6]
+    d = (
+        np.asarray(targets, dtype=np.float32)[:, :6]
+        - np.asarray(refs, dtype=np.float32)[:, :6]
+    )
     d[:, 3:6] = _wrap_pi(d[:, 3:6]).astype(np.float32)
     return d
 
@@ -131,7 +134,9 @@ class EpisodeTrace:
         self.infer_ms: list[float] = []
         self.action_chunks: list[dict] = []
 
-    def maybe_save_images(self, agent_img: np.ndarray, wrist_img: np.ndarray, step_idx: int) -> None:
+    def maybe_save_images(
+        self, agent_img: np.ndarray, wrist_img: np.ndarray, step_idx: int
+    ) -> None:
         if not self.save_images or self._img_count >= 30:
             return
         import cv2
@@ -152,12 +157,16 @@ class EpisodeTrace:
     ) -> None:
         chunk6 = np.asarray(action_chunk, dtype=np.float32)[:, :6]
         if action_type == "qpos":
-            arm_delta_chunk = (chunk6 - np.asarray(qpos_pre, dtype=np.float32)[:6]).astype(np.float32)
+            arm_delta_chunk = (
+                chunk6 - np.asarray(qpos_pre, dtype=np.float32)[:6]
+            ).astype(np.float32)
         elif action_type == "ee_pose":
             if ee_pre is None:
                 raise ValueError("ee_pre required when action_type=='ee_pose'")
             ref = np.asarray(ee_pre, dtype=np.float32)[:6]
-            arm_delta_chunk = np.stack([_pose_delta_6d(row, ref) for row in chunk6], axis=0)
+            arm_delta_chunk = np.stack(
+                [_pose_delta_6d(row, ref) for row in chunk6], axis=0
+            )
         else:
             raise ValueError(f"Unknown action_type: {action_type}")
 
@@ -221,17 +230,27 @@ class EpisodeTrace:
             actions = np.stack(self.action_executed)
             arm_delta = np.stack(self.arm_delta_cmd)
             if action_type == "qpos":
-                arm_track_err = np.linalg.norm(actions[:, :6] - qpos_post[:, :6], axis=1)
+                arm_track_err = np.linalg.norm(
+                    actions[:, :6] - qpos_post[:, :6], axis=1
+                )
                 arm_range_ref = qpos_pre
             elif action_type == "ee_pose":
-                ee_pre_st = np.stack(self.ee_pre) if self.ee_pre else np.zeros((0, 7), dtype=np.float32)
+                ee_pre_st = (
+                    np.stack(self.ee_pre)
+                    if self.ee_pre
+                    else np.zeros((0, 7), dtype=np.float32)
+                )
                 # Use control-cycle window metrics:
                 # command at k is compared against ee_pre[k], and tracking against ee_pre[k+1]
                 # (state at the next 20Hz control tick after command execution/settling).
                 if len(ee_pre_st) >= 2:
                     arm_delta = _pose_delta_batch(actions[:-1], ee_pre_st[:-1])
-                    arm_track_err = np.linalg.norm(_pose_delta_batch(actions[:-1], ee_pre_st[1:]), axis=1)
-                    ee_motion_norm = np.linalg.norm(_pose_delta_batch(ee_pre_st[1:], ee_pre_st[:-1]), axis=1)
+                    arm_track_err = np.linalg.norm(
+                        _pose_delta_batch(actions[:-1], ee_pre_st[1:]), axis=1
+                    )
+                    ee_motion_norm = np.linalg.norm(
+                        _pose_delta_batch(ee_pre_st[1:], ee_pre_st[:-1]), axis=1
+                    )
                     ee_xyz_cmd_norm = np.linalg.norm(arm_delta[:, :3], axis=1)
                     arm_range_ref = ee_pre_st[:-1]
                 else:
@@ -250,7 +269,9 @@ class EpisodeTrace:
             else:
                 raise ValueError(f"Unknown action_type: {action_type}")
         else:
-            qpos_pre = qpos_post = actions = arm_delta = arm_track_err = arm_cmd_norm = np.zeros((0,))
+            qpos_pre = qpos_post = actions = arm_delta = arm_track_err = (
+                arm_cmd_norm
+            ) = np.zeros((0,))
             arm_range_ref = np.zeros((0,))
             ee_motion_norm = ee_xyz_cmd_norm = None
 
@@ -259,8 +280,16 @@ class EpisodeTrace:
             step=np.asarray(self.step, dtype=np.int32),
             qpos_pre=qpos_pre,
             qpos_post=qpos_post,
-            ee_pre=np.stack(self.ee_pre) if self.ee_pre else np.zeros((0, 7), dtype=np.float32),
-            ee_post=np.stack(self.ee_post) if self.ee_post else np.zeros((0, 7), dtype=np.float32),
+            ee_pre=(
+                np.stack(self.ee_pre)
+                if self.ee_pre
+                else np.zeros((0, 7), dtype=np.float32)
+            ),
+            ee_post=(
+                np.stack(self.ee_post)
+                if self.ee_post
+                else np.zeros((0, 7), dtype=np.float32)
+            ),
             action_executed=actions,
             arm_delta_cmd=arm_delta,
             arm_track_err=arm_track_err,
@@ -270,8 +299,16 @@ class EpisodeTrace:
             gripper_state_post=np.asarray(self.gripper_state_post, dtype=np.float32),
             replan=np.asarray(self.replan, dtype=bool),
             infer_ms=np.asarray(self.infer_ms, dtype=np.float32),
-            ee_motion_norm=ee_motion_norm if ee_motion_norm is not None else np.zeros((0,), dtype=np.float32),
-            ee_xyz_cmd_norm=ee_xyz_cmd_norm if ee_xyz_cmd_norm is not None else np.zeros((0,), dtype=np.float32),
+            ee_motion_norm=(
+                ee_motion_norm
+                if ee_motion_norm is not None
+                else np.zeros((0,), dtype=np.float32)
+            ),
+            ee_xyz_cmd_norm=(
+                ee_xyz_cmd_norm
+                if ee_xyz_cmd_norm is not None
+                else np.zeros((0,), dtype=np.float32)
+            ),
         )
         with open(self.ep_dir / "action_chunks.jsonl", "w", encoding="utf-8") as f:
             for row in self.action_chunks:
@@ -284,18 +321,34 @@ class EpisodeTrace:
             "success": success,
             "num_steps": num_steps,
             "num_replans": int(sum(self.replan)),
-            "arm_cmd_norm_mean": float(arm_cmd_norm.mean()) if len(arm_cmd_norm) else 0.0,
+            "arm_cmd_norm_mean": (
+                float(arm_cmd_norm.mean()) if len(arm_cmd_norm) else 0.0
+            ),
             "arm_cmd_norm_max": float(arm_cmd_norm.max()) if len(arm_cmd_norm) else 0.0,
-            "arm_cmd_near_zero_frac": float((arm_cmd_norm < cmd_near_zero_thresh).mean())
-            if len(arm_cmd_norm)
-            else 1.0,
-            "arm_track_err_mean": float(arm_track_err.mean()) if len(arm_track_err) else 0.0,
-            "arm_track_err_max": float(arm_track_err.max()) if len(arm_track_err) else 0.0,
-            "gripper_toggles": int(np.sum(np.abs(np.diff(np.asarray(self.gripper_cmd))) > 0.5))
-            if len(self.gripper_cmd) > 1
-            else 0,
-            "state_pre_range_arm": np.ptp(arm_range_ref[:, :6], axis=0).tolist() if len(arm_range_ref) else [],
-            "action_range_arm": np.ptp(actions[:, :6], axis=0).tolist() if len(actions) else [],
+            "arm_cmd_near_zero_frac": (
+                float((arm_cmd_norm < cmd_near_zero_thresh).mean())
+                if len(arm_cmd_norm)
+                else 1.0
+            ),
+            "arm_track_err_mean": (
+                float(arm_track_err.mean()) if len(arm_track_err) else 0.0
+            ),
+            "arm_track_err_max": (
+                float(arm_track_err.max()) if len(arm_track_err) else 0.0
+            ),
+            "gripper_toggles": (
+                int(np.sum(np.abs(np.diff(np.asarray(self.gripper_cmd))) > 0.5))
+                if len(self.gripper_cmd) > 1
+                else 0
+            ),
+            "state_pre_range_arm": (
+                np.ptp(arm_range_ref[:, :6], axis=0).tolist()
+                if len(arm_range_ref)
+                else []
+            ),
+            "action_range_arm": (
+                np.ptp(actions[:, :6], axis=0).tolist() if len(actions) else []
+            ),
         }
         if ee_xyz_cmd_norm is not None and len(ee_xyz_cmd_norm):
             summary["ee_xyz_cmd_norm_mean"] = float(ee_xyz_cmd_norm.mean())
@@ -357,9 +410,15 @@ def analyze_trace_dir(trace_dir: Path) -> None:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="openpi WebSocket eval on Aubo MyEnv sim")
-    parser.add_argument("--host", type=str, default="localhost", help="openpi serve_policy host")
-    parser.add_argument("--port", type=int, default=8000, help="openpi serve_policy port")
+    parser = argparse.ArgumentParser(
+        description="openpi WebSocket eval on Aubo MyEnv sim"
+    )
+    parser.add_argument(
+        "--host", type=str, default="localhost", help="openpi serve_policy host"
+    )
+    parser.add_argument(
+        "--port", type=int, default=8000, help="openpi serve_policy port"
+    )
     parser.add_argument(
         "--resize-size",
         type=int,
@@ -372,11 +431,22 @@ def parse_args() -> argparse.Namespace:
         default=1,
         help="Actions per chunk before re-infer (1 = safest for ee_pose; horizon is 10)",
     )
-    parser.add_argument("--prompt", type=str, default=TASK_NAME, help="Language instruction for the policy")
-    parser.add_argument("--xml-path", type=str, default=XML_PATH, help="MuJoCo scene XML")
+    parser.add_argument(
+        "--prompt",
+        type=str,
+        default=TASK_NAME,
+        help="Language instruction for the policy",
+    )
+    parser.add_argument(
+        "--xml-path", type=str, default=XML_PATH, help="MuJoCo scene XML"
+    )
     parser.add_argument("--seed", type=int, default=42, help="MyEnv RNG seed")
-    parser.add_argument("--num-episodes", type=int, default=20, help="Number of evaluation rollouts")
-    parser.add_argument("--max-steps", type=int, default=600, help="Max control steps per episode")
+    parser.add_argument(
+        "--num-episodes", type=int, default=20, help="Number of evaluation rollouts"
+    )
+    parser.add_argument(
+        "--max-steps", type=int, default=600, help="Max control steps per episode"
+    )
     parser.add_argument(
         "--video-dir",
         type=str,
@@ -459,7 +529,9 @@ def main() -> None:
     from core.videos.episode_video_recorder import EpisodeVideoRecorder
 
     print(f"Connecting to openpi server at {args.host}:{args.port} ...")
-    client = websocket_client_policy.WebsocketClientPolicy(host=args.host, port=args.port)
+    client = websocket_client_policy.WebsocketClientPolicy(
+        host=args.host, port=args.port
+    )
     metadata = client.get_server_metadata()
     print(f"Server metadata: {metadata}")
 
@@ -497,7 +569,9 @@ def main() -> None:
 
     successful_episodes = 0
     all_summaries: list[dict] = []
-    print(f"Starting evaluation: {args.num_episodes} episodes, replan_steps={args.replan_steps}")
+    print(
+        f"Starting evaluation: {args.num_episodes} episodes, replan_steps={args.replan_steps}"
+    )
 
     for episode in range(args.num_episodes):
         env.reset()
@@ -528,7 +602,9 @@ def main() -> None:
             env.render(teleop=args.teleop_render)
             video_recorder.record_frame(agent_img, wrist_img)
             state_pre = _as_state(env.get_joint_state())
-            ee_pre = _as_state(env.get_ee_pose()) if args.action_type == "ee_pose" else None
+            ee_pre = (
+                _as_state(env.get_ee_pose()) if args.action_type == "ee_pose" else None
+            )
 
             infer_ms = 0.0
             replan = False
@@ -546,13 +622,17 @@ def main() -> None:
                 )
                 infer_out = client.infer(element)
                 action_chunk = infer_out["actions"]
-                infer_ms = float(infer_out.get("policy_timing", {}).get("infer_ms", 0.0))
+                infer_ms = float(
+                    infer_out.get("policy_timing", {}).get("infer_ms", 0.0)
+                )
                 chunk = np.asarray(action_chunk, dtype=np.float32)
                 if chunk.ndim == 1:
                     chunk = chunk[np.newaxis, :]
                 if args.action_type == "ee_pose" and ee_pre is not None:
                     delta0 = _pose_delta_6d(chunk[0], ee_pre)
-                    delta_msg = f"ee_delta[0]={delta0} |xyz|={np.linalg.norm(delta0[:3]):.4f}"
+                    delta_msg = (
+                        f"ee_delta[0]={delta0} |xyz|={np.linalg.norm(delta0[:3]):.4f}"
+                    )
                 else:
                     delta_msg = f"qpos_delta[0]={(chunk[0, :6] - state_pre[:6])}"
                 print(
@@ -561,7 +641,9 @@ def main() -> None:
                     flush=True,
                 )
                 if chunk.shape[-1] < 7:
-                    raise ValueError(f"Expected actions with last dim >= 7, got shape {chunk.shape}")
+                    raise ValueError(
+                        f"Expected actions with last dim >= 7, got shape {chunk.shape}"
+                    )
                 if trace is not None:
                     trace.record_replan(
                         step,
@@ -586,13 +668,17 @@ def main() -> None:
                     max_rpy_step=args.max_ee_rpy_step,
                 )
                 if clipped and step % 10 == 0:
-                    print(f"[ep {episode + 1} step {step}] EE guard clipped policy target")
+                    print(
+                        f"[ep {episode + 1} step {step}] EE guard clipped policy target"
+                    )
 
             env.step(action_np)
             # Advance sim so state_post matches training "actions = q after step".
             env.step_env()
             qpos_post = _as_state(env.get_joint_state())
-            ee_post = _as_state(env.get_ee_pose()) if args.action_type == "ee_pose" else None
+            ee_post = (
+                _as_state(env.get_ee_pose()) if args.action_type == "ee_pose" else None
+            )
 
             if trace is not None:
                 trace.record_step(
@@ -633,7 +719,9 @@ def main() -> None:
         video_recorder.stop(success=episode_success)
 
         if trace is not None:
-            summary = trace.finalize(episode_success, step, action_type=args.action_type)
+            summary = trace.finalize(
+                episode_success, step, action_type=args.action_type
+            )
             all_summaries.append(summary)
             msg = (
                 f"  trace ep {episode + 1}: cmd_norm={summary['arm_cmd_norm_mean']:.6f} "
@@ -655,7 +743,9 @@ def main() -> None:
             break
 
     total_evaluated = min(episode + 1, args.num_episodes)
-    success_rate = (successful_episodes / total_evaluated * 100.0) if total_evaluated > 0 else 0.0
+    success_rate = (
+        (successful_episodes / total_evaluated * 100.0) if total_evaluated > 0 else 0.0
+    )
 
     if trace_dir is not None and all_summaries:
         with open(trace_dir / "all_episodes_summary.json", "w", encoding="utf-8") as f:

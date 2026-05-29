@@ -63,3 +63,4 @@ openpi_eval_trace_v2/
 openpi_eval_trace/
 openpi_eval_trace_v3/
 ee_absolute_tracking_smoke.json
+openpi_eval_trace_qpos
