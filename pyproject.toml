@@ -27,9 +27,5 @@ dependencies = [
     "torchcodec>=0.10.0",
     "transformers @ git+https://github.com/huggingface/transformers.git@dcddb970176382c0fcf4521b0c0e6fc15894dfe0",
     "trimesh",
-]
-
-[tool.uv.workspace]
-members = [
-    "src/core",
+    "tyro>=1.0.13",
 ]
