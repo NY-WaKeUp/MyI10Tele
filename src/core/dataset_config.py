@@ -12,7 +12,7 @@ XML_PATH = os.path.join(PROJECT_DIR, "assets/aubo_i10_inspire/myscene.xml")
 TASK_NAME = "Put cube on the black platform"
 
 # LeRobot dataset directories (v2.0 layout with episode_*.parquet).
-AUBOI10_QPOS_ROOT = "~/MyI10Tele/data_auboI10_v2_compatible"
+AUBOI10_QPOS_ROOT = "~/MyI10Tele/data_auboI10_qpos_v20"
 AUBOI10_EEPOSE_ROOT = "~/MyI10Tele/data_auboI10_ee_pose_v20"
 
 # openpi TrainConfig names (see openpi/src/openpi/training/config.py).
