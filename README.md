@@ -11,9 +11,9 @@ Main features include:
 
 **Quick Start**
 1. Set the `XML_PATH` and `ROOT` variables to point to your local resource paths
-2. Run:  
+2. Run from the repo root (`.venv` activated):  
    ```
-   python src/core/0.tele.py
+   PYTHONPATH=src python src/core/0.tele.py
    ```
 3. Follow the prompts to operate the robot arm and collect demonstration data
 

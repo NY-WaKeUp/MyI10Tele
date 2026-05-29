@@ -13,6 +13,8 @@ TASK_NAME = "Put cube on the black platform"
 
 # LeRobot dataset directories (v2.0 layout with episode_*.parquet).
 AUBOI10_QPOS_ROOT = "~/MyI10Tele/data_auboI10_qpos_v20"
+# Interpolated / densified copy (scripts/densify_lerobot_dataset.py); smoother qpos at 20 Hz.
+AUBOI10_QPOS_ROOT_INTERP = "~/MyI10Tele/data_auboI10_qpos_v20_interp"
 AUBOI10_EEPOSE_ROOT = "~/MyI10Tele/data_auboI10_ee_pose_v20"
 
 # openpi TrainConfig names (see openpi/src/openpi/training/config.py).
@@ -20,10 +22,12 @@ OPENPI_TRAIN_CONFIG_QPOS = "pi0_auboI10_low_mem_finetune_qpos"
 OPENPI_TRAIN_CONFIG_EE_POSE = "pi0_auboI10_low_mem_finetune_ee_pose"
 
 
-def dataset_root(label: str | None = None) -> str:
+def dataset_root(label: str | None = None, *, interp: bool = False) -> str:
     """LeRobot dataset directory for the given action label."""
     label = label or ACTION_LABEL
     if label == "qpos":
+        if interp:
+            return os.path.expanduser(AUBOI10_QPOS_ROOT_INTERP)
         return os.path.expanduser(AUBOI10_QPOS_ROOT)
     if label == "ee_pose":
         return os.path.expanduser(AUBOI10_EEPOSE_ROOT)

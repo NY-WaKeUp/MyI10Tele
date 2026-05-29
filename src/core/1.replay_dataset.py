@@ -9,7 +9,7 @@ from matplotlib.widgets import Slider
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from core.dataset_config import ACTION_LABEL, REPO_NAME, dataset_root
 
-ROOT = dataset_root()
+ROOT = dataset_root(interp=True)
 ACTION_DIM_LABELS = (
     ["x", "y", "z", "roll", "pitch", "yaw", "gripper"]
     if ACTION_LABEL == "ee_pose"

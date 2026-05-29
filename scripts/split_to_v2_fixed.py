@@ -103,8 +103,12 @@ def load_episode_meta(src: Path, cameras: list[str]) -> list[EpisodeRow]:
                 episode_index=ep_idx,
                 length=int(r["length"]),
                 tasks=list(tasks),
-                video_file_index={cam: int(r[f"videos/{cam}/file_index"]) for cam in cameras},
-                video_from_timestamp={cam: float(r[f"videos/{cam}/from_timestamp"]) for cam in cameras},
+                video_file_index={
+                    cam: int(r[f"videos/{cam}/file_index"]) for cam in cameras
+                },
+                video_from_timestamp={
+                    cam: float(r[f"videos/{cam}/from_timestamp"]) for cam in cameras
+                },
             )
         )
     return rows
@@ -228,7 +232,9 @@ def split_camera(
 
         file_index = row.video_file_index[cam]
         from_ts = row.video_from_timestamp[cam]
-        chunk, local_start, n = plan_episode_segment(chunks, file_index, from_ts, length, fps)
+        chunk, local_start, n = plan_episode_segment(
+            chunks, file_index, from_ts, length, fps
+        )
 
         out_mp4 = out_dir / f"episode_{ep_idx:06d}.mp4"
         print(
@@ -243,13 +249,24 @@ def split_camera(
             raise RuntimeError(f"{out_mp4}: wrote {got} frames, expected {length}")
         dur = float(
             subprocess.check_output(
-                ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(out_mp4)],
+                [
+                    "ffprobe",
+                    "-v",
+                    "error",
+                    "-show_entries",
+                    "format=duration",
+                    "-of",
+                    "csv=p=0",
+                    str(out_mp4),
+                ],
                 text=True,
             ).strip()
         )
         expected_dur = length / fps
         if abs(dur - expected_dur) > 0.25:
-            raise RuntimeError(f"{out_mp4}: duration {dur:.3f}s != expected {expected_dur:.3f}s (bad PTS?)")
+            raise RuntimeError(
+                f"{out_mp4}: duration {dur:.3f}s != expected {expected_dur:.3f}s (bad PTS?)"
+            )
         print(f"    -> {out_mp4.name} ({got} frames, {dur:.2f}s)")
 
 
@@ -268,8 +285,12 @@ def setup_meta(src: Path, dst: Path, fps: float) -> None:
 
     info["codebase_version"] = "v2.0"
     info["fps"] = int(fps)
-    info["data_path"] = "data/chunk-{episode_chunk:03d}/episode_{episode_index:06d}.parquet"
-    info["video_path"] = "videos/chunk-{episode_chunk:03d}/{video_key}/episode_{episode_index:06d}.mp4"
+    info["data_path"] = (
+        "data/chunk-{episode_chunk:03d}/episode_{episode_index:06d}.parquet"
+    )
+    info["video_path"] = (
+        "videos/chunk-{episode_chunk:03d}/{video_key}/episode_{episode_index:06d}.mp4"
+    )
     for key in list(info.get("features", {})):
         feat = info["features"][key]
         if feat.get("dtype") == "video" and "info" in feat:
@@ -282,7 +303,9 @@ def setup_meta(src: Path, dst: Path, fps: float) -> None:
     print(f"\nWrote {info_path} (codebase_version=v2.0)")
 
 
-def verify_dataset(dst: Path, episode_rows: list[EpisodeRow], cameras: list[str], fps: float) -> None:
+def verify_dataset(
+    dst: Path, episode_rows: list[EpisodeRow], cameras: list[str], fps: float
+) -> None:
     print("\n=== Verify ===")
     data_dir = dst / "data" / "chunk-000"
     for row in episode_rows:
@@ -325,8 +348,16 @@ def convert_to_v21(dataset_root: Path, repo_id: str, num_workers: int) -> None:
     """v2.0 -> v2.1 on local disk: episodes_stats.jsonl, drop global stats.json, no Hub."""
     print("\n=== LeRobot v2.0 -> v2.1 (local) ===")
     from lerobot.common.datasets.lerobot_dataset import CODEBASE_VERSION, LeRobotDataset
-    from lerobot.common.datasets.utils import EPISODES_STATS_PATH, STATS_PATH, load_stats, write_info
-    from lerobot.common.datasets.v21.convert_stats import check_aggregate_stats, convert_stats
+    from lerobot.common.datasets.utils import (
+        EPISODES_STATS_PATH,
+        STATS_PATH,
+        load_stats,
+        write_info,
+    )
+    from lerobot.common.datasets.v21.convert_stats import (
+        check_aggregate_stats,
+        convert_stats,
+    )
 
     ds = LeRobotDataset(
         repo_id,
@@ -394,7 +425,10 @@ def main(
 
     print(f"Source: {src}")
     print(f"Dest:   {dst}")
-    print(f"Episodes: {len(episode_rows)}" + (f", filter {sorted(ep_filter)}" if ep_filter else ""))
+    print(
+        f"Episodes: {len(episode_rows)}"
+        + (f", filter {sorted(ep_filter)}" if ep_filter else "")
+    )
 
     if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:
         raise RuntimeError("ffmpeg and ffprobe must be on PATH")
@@ -411,9 +445,13 @@ def main(
 
     if not skip_videos:
         for cam in cam_names:
-            split_camera(src / "videos", dst / "videos", cam, episode_rows, fps, ep_filter)
+            split_camera(
+                src / "videos", dst / "videos", cam, episode_rows, fps, ep_filter
+            )
 
-    rows_to_verify = [r for r in episode_rows if ep_filter is None or r.episode_index in ep_filter]
+    rows_to_verify = [
+        r for r in episode_rows if ep_filter is None or r.episode_index in ep_filter
+    ]
     if ep_filter is None:
         rows_to_verify = episode_rows
     verify_dataset(dst, rows_to_verify, cam_names, fps)
