@@ -4,6 +4,13 @@
 import sys
 import os
 import shutil
+from pathlib import Path
+
+# Allow `python 0.tele.py` from src/core without PYTHONPATH=src.
+_SRC = Path(__file__).resolve().parents[1]
+if str(_SRC) not in sys.path:
+    sys.path.insert(0, str(_SRC))
+
 import numpy as np
 import cv2
 
@@ -143,7 +150,8 @@ def main() -> None:
                 raise ValueError(f"unknown ACTION_LABEL: {ACTION_LABEL}")
             dq_arm = float(np.linalg.norm(post_q[:6] - pre_state[:6]))
             dq_grip = float(abs(post_q[6] - pre_state[6]))
-            if record_flag and (dq_arm > MIN_ARM_DQ_RAD or dq_grip > MIN_GRIPPER_DQ):
+            # if record_flag and (dq_arm > MIN_ARM_DQ_RAD or dq_grip > MIN_GRIPPER_DQ):
+            if record_flag:
                 dataset.add_frame(
                     {
                         "observation.image": agent_image,
