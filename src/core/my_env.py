@@ -53,6 +53,21 @@ HOME_ARM_QPOS = np.array(
     dtype=np.float64,
 )
 
+# rh_r1 joint upper limit (assets/aubo_i10_inspire/aubo_i10_inspire.xml).
+# OpenPI gripper convention: [0, 1] with 0=open, 1=closed (docs/norm_stats.md).
+RH_R1_QPOS_MAX = 0.8663
+
+
+def gripper_qpos_to_openpi(rh_r1_qpos: float) -> float:
+    """Map rh_r1 joint qpos to OpenPI normalized gripper position."""
+    return float(np.clip(rh_r1_qpos / RH_R1_QPOS_MAX, 0.0, 1.0))
+
+
+def openpi_gripper_to_rh_r1_ctrl(gripper_openpi: float) -> float:
+    """Map OpenPI gripper command to rh_r1 position actuator target."""
+    return float(np.clip(gripper_openpi, 0.0, 1.0) * RH_R1_QPOS_MAX)
+
+
 # Reset orientation target: make flange face vertically down.
 # A simple choice is roll=pi, pitch=0, yaw=0 (keeps x-axis along world +x).
 RESET_EE_RPY_RAD = np.array([np.pi, 0.0, 0.0], dtype=np.float64)
@@ -325,9 +340,11 @@ class MyEnv:
         else:
             raise ValueError("action_type not recognized")
 
-        gripper_close = np.array([action[-1]], dtype=np.float64)
+        gripper_ctrl = np.array(
+            [openpi_gripper_to_rh_r1_ctrl(action[-1])], dtype=np.float64
+        )
         self.compute_q = q
-        q = np.concatenate([q, gripper_close])
+        q = np.concatenate([q, gripper_ctrl])
 
         self.q = q
         if self.state_type == "qpos":
@@ -405,13 +422,12 @@ class MyEnv:
         """
         Get the joint state of the robot
         returns:
-            q: np.array, joint angles of the robot + gripper state (0 for open, 1 for closed)
+            q: np.array, joint angles + gripper in OpenPI convention [0,1] (0=open, 1=closed)
             [j1,j2,j3,j4,j5,j6,gripper]
         """
         qpos = self.env.get_qpos_joints(joint_names=self.joint_names)
-        gripper = self.env.get_qpos_joint("rh_r1")
-        gripper_close = 1.0 if gripper[0] > 0.1 else 0.0
-        q = np.concatenate([qpos, [gripper_close]], dtype=np.float32)
+        gripper_openpi = gripper_qpos_to_openpi(float(self.env.get_qpos_joint("rh_r1")[0]))
+        q = np.concatenate([qpos, [gripper_openpi]], dtype=np.float32)
         # User-facing semantic name: qpos (even though internal config uses "qpos").
         return as_typed(q, type="qpos")
 
@@ -505,9 +521,9 @@ class MyEnv:
         """
         delta = self.compute_q - self.last_q
         self.last_q = copy.deepcopy(self.compute_q)
-        gripper = self.env.get_qpos_joint("rh_r1")
-        gripper_close = 1.0 if gripper[0] > 0.1 else 0.0
-        gripper_delta = self.gripper_close - gripper_close
+        gripper_openpi = gripper_qpos_to_openpi(float(self.env.get_qpos_joint("rh_r1")[0]))
+        gripper_cmd = 1.0 if self.gripper_close else 0.0
+        gripper_delta = gripper_cmd - gripper_openpi
         return np.concatenate([delta, [gripper_delta]], dtype=np.float32)
 
     def check_success(self):
@@ -595,9 +611,8 @@ class MyEnv:
         rpy = r2rpy(R)  # note vla models 最常用，因为省token
         # quat= r2quat(R)
         ee = np.concatenate([p, rpy], dtype=np.float32)
-        gripper = self.env.get_qpos_joint("rh_r1")
-        gripper_close = 1.0 if gripper[0] > 0.1 else 0.0
-        ee = np.concatenate([ee, [gripper_close]], dtype=np.float32)
+        gripper_openpi = gripper_qpos_to_openpi(float(self.env.get_qpos_joint("rh_r1")[0]))
+        ee = np.concatenate([ee, [gripper_openpi]], dtype=np.float32)
         return as_typed(ee, type="ee_pose")
 
     def get_obs_action(self):
