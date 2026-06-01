@@ -393,7 +393,7 @@ def main(
     skip_videos: bool = False,
     skip_meta: bool = False,
     clean: bool = False,
-    to_v21: bool = False,
+    to_v21: bool = True,
     v21_only: bool = False,
     repo_id: str = "auboI10",
     task: str | None = None,

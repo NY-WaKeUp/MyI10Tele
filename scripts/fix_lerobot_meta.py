@@ -109,8 +109,8 @@ def main() -> None:
     parser.add_argument(
         "--task",
         type=str,
-        default=None,
-        help="Task string when meta/tasks.parquet is missing (default: from info.json or prompt)",
+        default="Put cube on the black platform",
+        help="Task string when meta/tasks.parquet is missing (default: Put cube on the black platform)",
     )
     args = parser.parse_args()
     meta_dir = args.dataset_root / "meta"

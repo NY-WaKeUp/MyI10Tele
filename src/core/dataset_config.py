@@ -5,7 +5,7 @@ import os
 REPO_NAME = "auboI10"
 # "qpos": post-step joint targets (OpenPI-style).
 # "ee_pose": post-step flange xyz+rpy+gripper (observation.state stays qpos).
-ACTION_LABEL = "qpos"  # or "ee_pose"
+ACTION_LABEL = "ee_pose"  # or "ee_pose"
 
 PROJECT_DIR = os.path.expanduser("~/MyI10Tele")
 XML_PATH = os.path.join(PROJECT_DIR, "assets/aubo_i10_inspire/myscene.xml")
@@ -15,7 +15,7 @@ TASK_NAME = "Put cube on the black platform"
 AUBOI10_QPOS_ROOT = "~/MyI10Tele/data_auboI10_qpos_v21_continuous"
 # Interpolated / densified copy (scripts/densify_lerobot_dataset.py); smoother qpos at 20 Hz.
 AUBOI10_QPOS_ROOT_INTERP = "~/MyI10Tele/data_auboI10_qpos_v21_interp"
-AUBOI10_EEPOSE_ROOT = "~/MyI10Tele/data_auboI10_ee_pose_v21_continuous"
+AUBOI10_EEPOSE_ROOT = "~/MyI10Tele/data_auboI10_ee_pose_v30_continuous"
 
 # openpi TrainConfig names (see openpi/src/openpi/training/config.py).
 OPENPI_TRAIN_CONFIG_QPOS = "pi0_auboI10_low_mem_finetune_qpos"
