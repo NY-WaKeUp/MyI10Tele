@@ -24,7 +24,7 @@ dataset = LeRobotDataset.create(
         "observation.wrist_image": {"dtype": "image", "shape": (256, 256, 3), "names": ["height", "width", "channel"]},
         "observation.state": {"dtype": "float32", "shape": (6,), "names": ["state"]},
         "action": {"dtype": "float32", "shape": (7,), "names": ["action"]},
-        "obj_init": {"dtype": "float32", "shape": (6,), "names": ["obj_init"]},
+        "obj_init": {"dtype": "float32", "shape": (10,), "names": ["obj_init"]},
     },
     image_writer_threads=10,
     image_writer_processes=5,

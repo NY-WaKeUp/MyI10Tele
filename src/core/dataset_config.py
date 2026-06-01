@@ -13,6 +13,8 @@ TASK_NAME = "Put cube on the black platform"
 
 # LeRobot dataset directories (v2.0 layout with episode_*.parquet).
 AUBOI10_QPOS_ROOT = "~/MyI10Tele/data_auboI10_qpos_v20"
+AUBOI10_QPOS_ROOT_CONTINUOUS = "~/MyI10Tele/data_auboI10_qpos_v30_continuous"
+# obj_init shape (10,): cube_xyz + cube_quat + platform_xyz (see my_env.SCENE_LAYOUT_DIM)
 # Interpolated / densified copy (scripts/densify_lerobot_dataset.py); smoother qpos at 20 Hz.
 AUBOI10_QPOS_ROOT_INTERP = "~/MyI10Tele/data_auboI10_qpos_v20_interp"
 AUBOI10_EEPOSE_ROOT = "~/MyI10Tele/data_auboI10_ee_pose_v20"
@@ -28,7 +30,7 @@ def dataset_root(label: str | None = None, *, interp: bool = False) -> str:
     if label == "qpos":
         if interp:
             return os.path.expanduser(AUBOI10_QPOS_ROOT_INTERP)
-        return os.path.expanduser(AUBOI10_QPOS_ROOT)
+        return os.path.expanduser(AUBOI10_QPOS_ROOT_CONTINUOUS)
     if label == "ee_pose":
         return os.path.expanduser(AUBOI10_EEPOSE_ROOT)
     raise ValueError(f"unknown ACTION_LABEL: {label}")

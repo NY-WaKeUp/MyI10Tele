@@ -95,7 +95,8 @@ def main() -> None:
                 },
                 "obj_init": {
                     "dtype": "float32",
-                    "shape": (6,),
+                    # cube_xyz(3) + cube_quat_wxyz(4) + platform_xyz(3)
+                    "shape": (10,),
                     "names": ["obj_init"],
                 },
             },
