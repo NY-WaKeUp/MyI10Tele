@@ -28,6 +28,14 @@ Prerequisites
    PYTHONPATH=src python src/core/8.val_openpi_sim.py \\
      --trace-dir ./openpi_eval_trace
 
+   GT open-loop replay (no policy server; same episode as eval_dataset ep0)::
+
+   PYTHONPATH=src python src/core/8.val_openpi_sim.py \\
+     --action-type qpos --teleop-render \\
+     --replay-gt-episode 0 \\
+     --lerobot-root ~/MyI10Tele/data_auboI10_qpos_v21_continuous \\
+     --trace-dir ./openpi_eval_trace_gt_ep0
+
 4. Inspect traces:
 
    PYTHONPATH=src python src/core/8.val_openpi_sim.py --trace-dir ./openpi_eval_trace --trace-analyze-only
@@ -44,7 +52,7 @@ from pathlib import Path
 
 import numpy as np
 
-from core.dataset_config import policy_ee_pose_command
+from core.dataset_config import AUBOI10_QPOS_ROOT_CONTINUOUS, policy_ee_pose_command
 from core.eval_action_guard import (
     clamp_absolute_ee_action,
     cube_on_table,
@@ -90,6 +98,71 @@ def _pose_delta_batch(targets: np.ndarray, refs: np.ndarray) -> np.ndarray:
     )
     d[:, 3:6] = _wrap_pi(d[:, 3:6]).astype(np.float32)
     return d
+
+
+def _to_numpy7(value) -> np.ndarray:
+    arr = np.asarray(value, dtype=np.float32)
+    if arr.ndim == 2:
+        arr = arr[0]
+    if arr.shape[-1] < 7:
+        raise ValueError(f"Expected last dim >= 7, got shape {arr.shape}")
+    return arr[:7].astype(np.float64, copy=False)
+
+
+def _load_gt_episode(
+    lerobot_root: str, episode_id: int
+) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
+    """Load one episode from LeRobot v2 parquet (no LeRobotDataset — avoids v2/v3 API mismatch)."""
+    import pandas as pd
+
+    root = Path(os.path.expanduser(lerobot_root))
+    info_path = root / "meta" / "info.json"
+    if not info_path.is_file():
+        raise FileNotFoundError(f"Missing dataset meta: {info_path}")
+    with open(info_path, encoding="utf-8") as f:
+        info = json.load(f)
+    num_episodes = int(info["total_episodes"])
+
+    if episode_id < 0 or episode_id >= num_episodes:
+        raise ValueError(
+            f"episode_id {episode_id} out of range [0, {num_episodes - 1}]"
+        )
+
+    parquets = sorted((root / "data").rglob("*.parquet"))
+    if not parquets:
+        raise FileNotFoundError(f"No parquet under {root / 'data'}")
+
+    df = pd.concat([pd.read_parquet(p) for p in parquets], ignore_index=True)
+    ep = df.loc[df["episode_index"] == episode_id].sort_values("frame_index")
+    if ep.empty:
+        raise ValueError(f"Episode {episode_id} has no rows in {root}")
+
+    states = np.stack([_to_numpy7(v) for v in ep["observation.state"].values])
+    actions = np.stack([_to_numpy7(v) for v in ep["actions"].values])
+    obj_init = None
+    if "obj_init" in ep.columns:
+        obj_init = np.asarray(ep.iloc[0]["obj_init"], dtype=np.float64).reshape(-1)
+    return states, actions, obj_init
+
+
+def _snap_robot_to_state(env, state7: np.ndarray) -> None:
+    """Set arm + gripper to a recorded 7D joint state (OpenPI layout)."""
+    import mujoco
+
+    from core.my_env import openpi_gripper_to_rh_r1_ctrl
+
+    q_arm = np.asarray(state7[:6], dtype=np.float64)
+    env.env.forward(q=q_arm, joint_names=env.joint_names, increase_tick=False)
+    grip = openpi_gripper_to_rh_r1_ctrl(float(state7[6]))
+    env.q = np.concatenate([q_arm, np.array([grip], dtype=np.float64)])
+    env.compute_q = q_arm.copy()
+    env.last_q = q_arm.copy()
+    env.env.data.qvel[:] = 0.0
+    mujoco.mj_forward(env.env.model, env.env.data)
+
+
+def _apply_obj_init(env, obj_init: np.ndarray) -> None:
+    env.apply_scene_layout(obj_init, settle=False)
 
 
 def _build_observation(
@@ -510,7 +583,169 @@ def parse_args() -> argparse.Namespace:
         default=25,
         help="Print cube xyz every N steps; 0 = only when cube leaves the table",
     )
+    parser.add_argument(
+        "--replay-gt-episode",
+        type=int,
+        default=None,
+        metavar="EP",
+        help="Open-loop replay recorded actions for this dataset episode (no policy server)",
+    )
+    parser.add_argument(
+        "--lerobot-root",
+        type=str,
+        default=AUBOI10_QPOS_ROOT_CONTINUOUS,
+        help="LeRobot root for --replay-gt-episode",
+    )
+    parser.add_argument(
+        "--replay-max-frames",
+        type=int,
+        default=None,
+        help="Cap GT replay length (default: full episode)",
+    )
+    parser.add_argument(
+        "--no-replay-dataset-init",
+        action="store_true",
+        help="After reset, do not restore cube/platform from dataset obj_init",
+    )
     return parser.parse_args()
+
+
+def run_gt_replay(args: argparse.Namespace, trace_dir: Path | None) -> None:
+    """Execute dataset GT actions in MuJoCo (diagnose sim execution vs policy)."""
+    from core.my_env import MyEnv
+    from core.videos.episode_video_recorder import EpisodeVideoRecorder
+
+    episode_id = int(args.replay_gt_episode)
+    states, actions, obj_init = _load_gt_episode(args.lerobot_root, episode_id)
+    n_frames = len(actions)
+    if args.replay_max_frames is not None:
+        n_frames = min(n_frames, int(args.replay_max_frames))
+        states = states[:n_frames]
+        actions = actions[:n_frames]
+
+    ee_cmd = policy_ee_pose_command(args.action_type)
+    env = MyEnv(
+        args.xml_path,
+        seed=args.seed,
+        action_type=args.action_type,
+        state_type="qpos",
+        ee_pose_command=ee_cmd,
+    )
+    print(
+        f"GT replay ep {episode_id}: {n_frames} frames from {os.path.expanduser(args.lerobot_root)}"
+    )
+    print(
+        f"action_type={env.action_type} ee_pose_command={env.ee_pose_command} "
+        f"dataset_init={not args.no_replay_dataset_init and obj_init is not None}"
+    )
+
+    if trace_dir is not None:
+        trace_dir.mkdir(parents=True, exist_ok=True)
+        with open(trace_dir / "run_config.json", "w", encoding="utf-8") as f:
+            json.dump(vars(args), f, indent=2, default=str)
+
+    video_recorder = EpisodeVideoRecorder(
+        output_dir=args.video_dir,
+        fps=HZ,
+        frame_size=(512, 256),
+    )
+    trace = (
+        EpisodeTrace(episode_id, trace_dir, save_images=args.trace_save_images)
+        if trace_dir is not None
+        else None
+    )
+
+    if not args.no_replay_dataset_init and obj_init is not None:
+        env.reset_with_recorded_layout(obj_init, seed=args.seed)
+    else:
+        env.reset(seed=args.seed)
+    _snap_robot_to_state(env, states[0])
+    for _ in range(10):
+        env.step_env()
+
+    video_recorder.start_episode(episode_id)
+    step = 0
+    episode_success = False
+    cube_fell_logged = False
+    track_errs: list[float] = []
+    cmd_norms: list[float] = []
+
+    while env.env.is_viewer_alive() and step < n_frames:
+        env.step_env()
+        if not env.env.loop_every(HZ=HZ):
+            continue
+
+        agent_img, wrist_img = env.grab_image()
+        env.render(teleop=args.teleop_render)
+        video_recorder.record_frame(agent_img, wrist_img)
+
+        state_pre = _as_state(env.get_joint_state())
+        action_np = np.asarray(actions[step], dtype=np.float64)
+        cmd_norms.append(float(np.linalg.norm(action_np[:6] - state_pre[:6])))
+
+        env.step(action_np)
+        env.step_env()
+        qpos_post = _as_state(env.get_joint_state())
+        track_errs.append(float(np.linalg.norm(action_np[:6] - qpos_post[:6])))
+
+        if trace is not None:
+            trace.record_step(
+                step_idx=step,
+                qpos_pre=state_pre,
+                qpos_post=qpos_post,
+                action_executed=action_np,
+                action_type=args.action_type,
+                ee_pre=None,
+                ee_post=None,
+                replan=False,
+                infer_ms=0.0,
+            )
+
+        env.render(teleop=args.teleop_render)
+        step += 1
+
+        p_cube = cube_pose(env)
+        on_table = cube_on_table(p_cube)
+        if args.log_cube_every > 0 and step % args.log_cube_every == 0:
+            print(
+                f"[gt ep {episode_id} step {step}] cube xyz={p_cube.round(4)} "
+                f"on_table={on_table} track_err={track_errs[-1]:.6f}",
+                flush=True,
+            )
+        if not on_table and not cube_fell_logged:
+            cube_fell_logged = True
+            print(
+                f"[gt ep {episode_id} step {step}] cube left table: xyz={p_cube.round(4)}",
+                flush=True,
+            )
+        if env.check_success():
+            print(f"GT replay ep {episode_id}: success in {step} steps")
+            episode_success = True
+            break
+
+    video_recorder.stop(success=episode_success)
+
+    cmd_mean = float(np.mean(cmd_norms)) if cmd_norms else 0.0
+    track_mean = float(np.mean(track_errs)) if track_errs else 0.0
+    track_max = float(np.max(track_errs)) if track_errs else 0.0
+    print("-" * 30)
+    print(f"GT replay done: steps={step} success={episode_success}")
+    print(f"  |action-state_pre| arm mean={cmd_mean:.6f} (dataset label scale)")
+    print(f"  |action-qpos_post| arm mean={track_mean:.6f} max={track_max:.6f}")
+    if track_mean > 0.01:
+        print("  -> Large tracking error: sim actuation likely not matching recorded targets.")
+    elif track_mean < 0.001:
+        print("  -> Tracking OK: if arm still looked wrong, check init pose / obj_init / cameras.")
+    print(f"Videos: {args.video_dir}")
+    if trace_dir is not None:
+        summary = trace.finalize(episode_success, step, action_type=args.action_type)
+        summary["gt_replay"] = True
+        summary["lerobot_root"] = args.lerobot_root
+        with open(trace_dir / "gt_replay_summary.json", "w", encoding="utf-8") as f:
+            json.dump(summary, f, indent=2)
+        print(f"Traces: {trace_dir}")
+        analyze_trace_dir(trace_dir)
+    print("-" * 30)
 
 
 def main() -> None:
@@ -521,6 +756,10 @@ def main() -> None:
         if trace_dir is None:
             raise SystemExit("--trace-analyze-only requires --trace-dir")
         analyze_trace_dir(trace_dir)
+        return
+
+    if args.replay_gt_episode is not None:
+        run_gt_replay(args, trace_dir)
         return
 
     # These imports are only needed for rollout execution (not trace-only analysis).

@@ -9,7 +9,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from utils.MujocoParser import MuJoCoParserClass
 from utils.utils import rotation_matrix, sample_xyzs, rpy2r, add_title_to_img, solve_ik
-from utils.transforms import r2quat, r2rpy
+from utils.transforms import quat2r, r2quat, r2rpy
 import glfw
 import copy
 import mujoco
@@ -89,6 +89,12 @@ PLACE_TARGET_DECK_HALF_DEFAULT = np.array([0.025, 0.03, 0.0125], dtype=np.float6
 # Per-axis multiplicative jitter for deck XY footprint and thickness (world-box half extents).
 PLACE_TARGET_DECK_SIZE_SCALE_LOW = 0.9
 PLACE_TARGET_DECK_SIZE_SCALE_HIGH = 1.1
+
+# Scene layout stored in LeRobot ``obj_init`` per episode (float32 vector).
+# Legacy (6): cube_xyz + platform_xyz — no cube orientation.
+# Current (10): cube_xyz(3) + cube_quat_wxyz(4) + platform_xyz(3); platform R stays identity.
+SCENE_LAYOUT_DIM_LEGACY = 6
+SCENE_LAYOUT_DIM = 10
 
 # Body-axis directions for cube faces (outward normals along ±x, ±y, ±z in body frame).
 _CUBE_FACE_NORMALS = (
@@ -277,10 +283,6 @@ class MyEnv:
         self.last_q = copy.deepcopy(q_zero)
         self.q = np.concatenate([q_zero, np.array([0.0], dtype=np.float64)])
         self.p0, self.R0 = self.env.get_pR_body(body_name="i10_inspire_flange_link")
-        mug_init_pose, plate_init_pose = self.get_obj_pose()
-        self.obj_init_pose = np.concatenate(
-            [mug_init_pose, plate_init_pose], dtype=np.float32
-        )
         for _ in range(100):
             self.step_env()
         # mj_step during settling integrates the free joint; implicit contacts can drive the
@@ -292,9 +294,42 @@ class MyEnv:
             )
         self.env.data.qvel[:] = 0.0
         mujoco.mj_forward(self.env.model, self.env.data)
+        self.obj_init_pose = self.capture_scene_layout()
         print("DONE INITIALIZATION")
         self.gripper_close = True
         self.past_chars = []
+
+    def reset_with_recorded_layout(self, obj_init: np.ndarray, *, seed: int | None = None) -> None:
+        """Reset arm like ``reset()`` but restore scene from recorded ``obj_init`` (no layout RNG)."""
+        if seed is not None:
+            self._layout_rng = np.random.default_rng(int(seed))
+
+        q_init = HOME_ARM_QPOS.copy()
+        self.env.forward(q=q_init, joint_names=self.joint_names, increase_tick=False)
+        p_home, _ = self.env.get_pR_body(body_name="i10_inspire_flange_link")
+        R_trgt = rpy2r(RESET_EE_RPY_RAD)
+        q_zero, _, _ = solve_ik(
+            env=self.env,
+            joint_names_for_ik=self.joint_names,
+            body_name_trgt="i10_inspire_flange_link",
+            q_init=q_init,
+            p_trgt=p_home,
+            R_trgt=R_trgt,
+        )
+        self.env.forward(q=q_zero, joint_names=self.joint_names, increase_tick=False)
+
+        self.apply_scene_layout(obj_init, settle=False)
+        self.obj_init_pose = np.asarray(obj_init, dtype=np.float32).reshape(-1)
+
+        self.last_q = copy.deepcopy(q_zero)
+        self.q = np.concatenate([q_zero, np.array([0.0], dtype=np.float64)])
+        self.p0, self.R0 = self.env.get_pR_body(body_name="i10_inspire_flange_link")
+        self.env.data.qvel[:] = 0.0
+        mujoco.mj_forward(self.env.model, self.env.data)
+        for _ in range(20):
+            self.step_env()
+        self.gripper_close = True
+        print("DONE INITIALIZATION (recorded layout)")
 
     def step(self, action):
         """
@@ -572,18 +607,56 @@ class MyEnv:
         p_plate = self.env.get_p_body("place_target_platform")
         return p_mug, p_plate
 
-    def set_obj_pose(self, p_mug, p_plate):
+    def capture_scene_layout(self) -> np.ndarray:
+        """Episode scene layout after reset settle: cube pose + platform center (mocap xyz)."""
+        p_cube, R_cube = self.env.get_pR_body(body_name="cube")
+        p_plat = self.env.get_p_body("place_target_platform")
+        q_cube = r2quat(R_cube)
+        return np.concatenate([p_cube, q_cube, p_plat], dtype=np.float32)
+
+    def apply_scene_layout(self, layout: np.ndarray, *, settle: bool = True) -> None:
+        """Restore cube (free joint) and place platform (mocap xyz, R=I) from ``obj_init``."""
+        layout = np.asarray(layout, dtype=np.float64).reshape(-1)
+        if layout.size == SCENE_LAYOUT_DIM_LEGACY:
+            self.set_obj_pose(layout[:3], layout[3:6], settle=settle)
+            return
+        if layout.size != SCENE_LAYOUT_DIM:
+            raise ValueError(
+                f"obj_init length must be {SCENE_LAYOUT_DIM_LEGACY} or {SCENE_LAYOUT_DIM}, "
+                f"got {layout.size}"
+            )
+
+        p_cube = layout[:3]
+        q_cube = layout[3:7]
+        p_plat = layout[7:10]
+        self.env.set_p_base_body(body_name="cube", p=p_cube)
+        self.env.set_R_base_body(body_name="cube", R=quat2r(q_cube))
+        self.env.set_p_mocap(mocap_name="place_target_platform", p=p_plat)
+        self.env.set_R_mocap(mocap_name="place_target_platform", R=np.eye(3, 3))
+        self.env.data.qvel[:] = 0.0
+        mujoco.mj_forward(self.env.model, self.env.data)
+        if settle:
+            for _ in range(5):
+                self.step_env()
+
+    def set_obj_pose(self, p_mug, p_plate, *, settle: bool = True) -> None:
         """
-        Set the object poses
+        Set cube (free body) and place platform (mocap) poses.
+
         args:
-            p_mug: np.array, position of the mug
-            p_plate: np.array, position of the plate
+            p_mug: cube center xyz
+            p_plate: place_target_platform center xyz (mocap, not a free body)
+            settle: if True, run short physics steps after kinematic placement
         """
         self.env.set_p_base_body(body_name="cube", p=p_mug)
         self.env.set_R_base_body(body_name="cube", R=np.eye(3, 3))
-        self.env.set_p_base_body(body_name="place_target_platform", p=p_plate)
-        self.env.set_R_base_body(body_name="place_target_platform", R=np.eye(3, 3))
-        self.step_env()
+        self.env.set_p_mocap(mocap_name="place_target_platform", p=p_plate)
+        self.env.set_R_mocap(mocap_name="place_target_platform", R=np.eye(3, 3))
+        self.env.data.qvel[:] = 0.0
+        mujoco.mj_forward(self.env.model, self.env.data)
+        if settle:
+            for _ in range(5):
+                self.step_env()
 
     def _randomize_place_target_deck_size(self) -> None:
         """

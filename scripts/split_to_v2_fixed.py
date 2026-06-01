@@ -12,6 +12,7 @@ Requires lerobot (e.g. openpi venv): uv run python .../split_to_v2_fixed.py --to
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -384,8 +385,12 @@ def convert_to_v21(dataset_root: Path, repo_id: str, num_workers: int) -> None:
 
 
 def main(
-    src_root: str = "/home/ningyu/MyI10Tele/data_auboI10_ee_pose",
-    dst_root: str = "/home/ningyu/MyI10Tele/data_auboI10_ee_pose_v20",
+    src_root: str = os.path.expanduser(
+        "~/MyI10Tele/data_auboI10_ee_pose_v30_continuous"
+    ),
+    dst_root: str = os.path.expanduser(
+        "~/MyI10Tele/data_auboI10_ee_pose_v21_continuous"
+    ),
     fps: float = 20.0,
     cameras: list[str] | None = None,
     episodes: list[int] | None = None,
@@ -397,7 +402,7 @@ def main(
     v21_only: bool = False,
     repo_id: str = "auboI10",
     task: str | None = None,
-    v21_num_workers: int = 4,
+    v21_num_workers: int = max(1, os.cpu_count()),
 ) -> None:
     """Convert v3 chunked dataset to v2 per-episode layout (openpi-compatible).
 
