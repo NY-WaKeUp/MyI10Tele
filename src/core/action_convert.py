@@ -7,6 +7,7 @@ import numpy as np
 
 from utils.MujocoParser import MuJoCoParserClass
 from utils.transforms import r2rpy
+from utils.utils import rpy2r, solve_ik
 
 from core.my_env import gripper_qpos_to_openpi, openpi_gripper_to_rh_r1_ctrl
 
@@ -57,3 +58,57 @@ class QposToEePoseFK:
         for i in range(rows.shape[0]):
             out[i] = self.single(rows[i])
         return out
+
+
+class EePoseToQposIK:
+    """Headless IK: post-step ee_pose (7D) -> post-step qpos (7D).
+
+    Uses pre-step arm joints as q_init (``observation.state[:6]``), matching
+    MyEnv absolute ee_pose execution. IK is redundant: recovered qpos may differ
+    from the original teleop solution when multiple joint configs reach the same EE.
+    """
+
+    def __init__(self, xml_path: str) -> None:
+        self._parser = MuJoCoParserClass(
+            name="ee_to_qpos_ik", rel_xml_path=xml_path, verbose=False
+        )
+
+    def single(
+        self, ee_pose7: np.ndarray, q_init6: np.ndarray
+    ) -> tuple[np.ndarray, float]:
+        ee = np.asarray(ee_pose7, dtype=np.float64).reshape(7)
+        q0 = np.asarray(q_init6, dtype=np.float64).reshape(6)
+        p_trgt = ee[:3]
+        R_trgt = rpy2r(ee[3:6])
+        q_arm, ik_err_stack, _ = solve_ik(
+            env=self._parser,
+            joint_names_for_ik=list(ARM_JOINT_NAMES),
+            body_name_trgt=FLANGE_BODY,
+            q_init=q0,
+            p_trgt=p_trgt,
+            R_trgt=R_trgt,
+            max_ik_tick=50,
+            ik_stepsize=1.0,
+            ik_eps=1e-2,
+            ik_th=np.radians(5.0),
+            restore_state=True,
+            render=False,
+            verbose_warning=False,
+        )
+        ik_err = float(np.linalg.norm(ik_err_stack))
+        qpos7 = np.array([*q_arm, ee[6]], dtype=np.float32)
+        return qpos7, ik_err
+
+    def episode(
+        self,
+        ee_actions: np.ndarray,
+        pre_states: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        ee_actions = np.asarray(ee_actions, dtype=np.float64)
+        pre_states = np.asarray(pre_states, dtype=np.float64)
+        n = ee_actions.shape[0]
+        out = np.empty((n, 7), dtype=np.float32)
+        ik_errs = np.empty(n, dtype=np.float64)
+        for i in range(n):
+            out[i], ik_errs[i] = self.single(ee_actions[i], pre_states[i, :6])
+        return out, ik_errs
