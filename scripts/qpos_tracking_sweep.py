@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Sweep arm position actuator kp/kv (+ optional physics settle) for qpos tracking.
+"""Sweep physics settle steps for qpos tracking (XML actuator gains unchanged).
 
-Bypasses policy inference. Uses dataset GT qpos targets or synthetic joint deltas.
-Goal: find gains where track_err/cmd drops without knocking the cube off the table.
+Uses aubo_i10_inspire.xml defaults (kp=10000 kv=1000). Bypasses policy inference.
+Pass --sweep-actuator-gains to also grid-search runtime kp/kv overrides.
 """
 
 from __future__ import annotations
@@ -61,14 +61,19 @@ def run_trial(
     env: MyEnv,
     actions: np.ndarray,
     *,
-    kp: float,
-    kv: float,
     settle_steps: int,
     states0: np.ndarray | None,
     obj_init: np.ndarray | None,
     seed: int,
+    kp: float | None = None,
+    kv: float | None = None,
 ) -> dict:
-    env.set_arm_position_gains(kp, kv)
+    xml_kp, xml_kv = env.get_arm_position_gains()
+    trial_kp = xml_kp if kp is None else kp
+    trial_kv = xml_kv if kv is None else kv
+    if kp is not None or kv is not None:
+        env.set_arm_position_gains(trial_kp, trial_kv)
+
     if obj_init is not None:
         env.reset_with_recorded_layout(obj_init, seed=seed)
     else:
@@ -88,8 +93,7 @@ def run_trial(
         q_pre = np.asarray(env.get_joint_state(), dtype=np.float64)
         cmd_norms.append(float(np.linalg.norm(action_np[:6] - q_pre[:6])))
         env.step(action_np)
-        for _ in range(max(1, settle_steps)):
-            env.step_env()
+        env.settle_physics(steps=max(1, settle_steps))
         q_post = np.asarray(env.get_joint_state(), dtype=np.float64)
         track_errs.append(float(np.linalg.norm(action_np[:6] - q_post[:6])))
         if cube_fell_step is None and not cube_on_table(cube_pose(env)):
@@ -102,8 +106,8 @@ def run_trial(
     cube_disp = float(np.linalg.norm(cube_final - cube_init))
 
     return {
-        "kp": kp,
-        "kv": kv,
+        "kp": trial_kp,
+        "kv": trial_kv,
         "settle_steps": settle_steps,
         "steps": int(len(actions)),
         "cmd_mean": float(cmd.mean()),
@@ -138,18 +142,26 @@ def main() -> None:
     )
     parser.add_argument("--synthetic-dq", type=float, default=0.012, help="Rad/step for synthetic mode.")
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--settle-list",
+        type=str,
+        default="1,10,20,50,100",
+        help="Physics settle steps to sweep (XML kp/kv unchanged unless --sweep-actuator-gains).",
+    )
+    parser.add_argument(
+        "--sweep-actuator-gains",
+        action="store_true",
+        help="Also grid-search runtime kp/kv overrides (off by default; keeps XML defaults).",
+    )
     parser.add_argument("--kp-list", type=str, default="2000,5000,10000")
-    parser.add_argument("--kv-list", type=str, default="200,500,1000")
-    parser.add_argument("--settle-list", type=str, default="1,5,10")
+    parser.add_argument("--kv-list", type=str, default="200,500,1000,2000")
     parser.add_argument(
         "--out-json",
         type=Path,
-        default=Path("~/MyI10Tele/qpos_tracking_sweep.json").expanduser(),
+        default=Path("~/MyI10Tele/qpos_settle_sweep.json").expanduser(),
     )
     args = parser.parse_args()
 
-    kp_list = parse_float_list(args.kp_list)
-    kv_list = parse_float_list(args.kv_list)
     settle_list = parse_int_list(args.settle_list)
 
     states, gt_actions, obj_init = load_gt_episode(args.lerobot_root, args.gt_episode)
@@ -179,20 +191,31 @@ def main() -> None:
         ee_pose_command="absolute",
     )
     default_kp, default_kv = env.get_arm_position_gains()
-    print(f"XML default arm gains: kp={default_kp} kv={default_kv}")
-    print(
-        f"Sweep: {len(kp_list)}x{len(kv_list)}x{len(settle_list)} configs, "
-        f"{len(actions_np)} steps, source={args.source}"
-    )
+    print(f"XML arm gains (fixed unless --sweep-actuator-gains): kp={default_kp} kv={default_kv}")
+
+    if args.sweep_actuator_gains:
+        kp_list = parse_float_list(args.kp_list)
+        kv_list = parse_float_list(args.kv_list)
+        configs = [(kp, kv, s) for kp, kv, s in product(kp_list, kv_list, settle_list)]
+        print(
+            f"Sweep actuator+settle: {len(kp_list)}x{len(kv_list)}x{len(settle_list)} configs, "
+            f"{len(actions_np)} steps, source={args.source}"
+        )
+    else:
+        configs = [(None, None, s) for s in settle_list]
+        print(
+            f"Sweep settle only: {len(settle_list)} configs, "
+            f"{len(actions_np)} steps, source={args.source}"
+        )
 
     results: list[dict] = []
-    for kp, kv, settle in product(kp_list, kv_list, settle_list):
+    for kp, kv, settle in configs:
         rec = run_trial(
             env,
             actions_np,
+            settle_steps=settle,
             kp=kp,
             kv=kv,
-            settle_steps=settle,
             states0=states0,
             obj_init=obj_init if args.source == "gt" else None,
             seed=args.seed,
@@ -200,7 +223,7 @@ def main() -> None:
         results.append(rec)
         flag = "OK" if rec["cube_on_table_end"] else "FELL"
         print(
-            f"kp={kp:6.0f} kv={kv:5.0f} settle={settle:2d} "
+            f"kp={rec['kp']:6.0f} kv={rec['kv']:5.0f} settle={settle:3d} "
             f"track/cmd={rec['track_cmd_ratio_mean']:.3f} "
             f"track={rec['track_mean']:.4f} cmd={rec['cmd_mean']:.4f} "
             f"cube_disp={rec['cube_disp_m']*100:.1f}cm [{flag}]",
@@ -215,8 +238,9 @@ def main() -> None:
         "source": args.source,
         "gt_episode": args.gt_episode,
         "max_steps": args.max_steps,
-        "xml_default_kp": default_kp,
-        "xml_default_kv": default_kv,
+        "xml_kp": default_kp,
+        "xml_kv": default_kv,
+        "sweep_actuator_gains": args.sweep_actuator_gains,
         "best_stable": best,
         "best_any": min(results, key=lambda r: r["track_cmd_ratio_mean"]),
         "n_configs": len(results),
@@ -229,7 +253,7 @@ def main() -> None:
         encoding="utf-8",
     )
 
-    print("\n=== Qpos Tracking Sweep ===")
+    print("\n=== Qpos Settle Sweep (XML gains) ===")
     print(f"Best (cube on table): {best}")
     print(f"Saved: {args.out_json}")
 

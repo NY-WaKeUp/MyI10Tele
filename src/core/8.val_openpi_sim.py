@@ -36,6 +36,35 @@ Prerequisites
      --action-type qpos --replan-steps 1 \\
      --action-delta-stride 10 \\
      --policy-obs-source sim \\
+     --physics-settle-steps 50 \\
+     --trace-dir ./openpi_eval_trace_qpos_k10
+
+   Diagnose closed-loop drift (state from dataset, cameras from sim)::
+
+   PYTHONPATH=src python src/core/8.val_openpi_sim.py \\
+     --action-type qpos --action-delta-stride 10 --replan-steps 1 \\
+     --policy-obs-source state-dataset-image-sim \\
+     --policy-obs-dataset-episode 0 --dataset-init-episode 0 \\
+     --physics-settle-steps 50 \\
+     --trace-dir ./openpi_eval_trace_qpos_hybrid
+
+   Sim closed-loop: match 0.tele.py post-action physics (one mj_step, not settle 50)::
+
+   PYTHONPATH=src python src/core/8.val_openpi_sim.py \\
+     --action-type qpos --action-delta-stride 10 --replan-steps 1 \\
+     --policy-obs-source sim --dataset-init-episode 0 \\
+     --teleop-tick \\
+     --trace-dir ./openpi_eval_trace_qpos_teleop_tick
+
+   qpos + --action-delta-stride K: chunk[0] is absolute qpos at t+K (after server
+   AbsoluteActions). Hold the same setpoint for K ticks (default). Optional
+   --qpos-hold-ramp: open-loop anchor→target interpolation by hold index (not q_cur).
+
+   Adaptive settle (stop when arm reaches target):
+
+   PYTHONPATH=src python src/core/8.val_openpi_sim.py \\
+     --action-type qpos --action-delta-stride 10 \\
+     --physics-settle-tol 0.005 --physics-settle-max-steps 200 \\
      --trace-dir ./openpi_eval_trace_qpos_k10
 
    GT open-loop replay (no policy server; same episode as eval_dataset ep0)::
@@ -559,10 +588,31 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--physics-settle-steps",
         type=int,
-        default=1,
+        default=50,
         metavar="N",
-        help="MuJoCo mj_step count after each action (default 1 matches 0.tele.py); "
-        "increase for absolute ee/qpos tracking when actuators lag",
+        help="Fixed mj_step count after each step(action). Default 50 for GT replay tracking. "
+        "Use --teleop-tick for policy closed-loop (one mj_step, matches 0.tele.py). "
+        "Ignored when --physics-settle-tol is set.",
+    )
+    parser.add_argument(
+        "--teleop-tick",
+        action="store_true",
+        help="After step(action), run exactly one env.step_env() (0.tele.py L143-144). "
+        "Matches dataset action=post_q after one physics step; overrides multi-step settle.",
+    )
+    parser.add_argument(
+        "--physics-settle-tol",
+        type=float,
+        default=None,
+        metavar="RAD",
+        help="Adaptive settle: mj_step until ||q_arm - q_target|| <= RAD (cap: --physics-settle-max-steps)",
+    )
+    parser.add_argument(
+        "--physics-settle-max-steps",
+        type=int,
+        default=200,
+        metavar="N",
+        help="Max mj_step budget when --physics-settle-tol is set",
     )
     parser.add_argument(
         "--video-dir",
@@ -651,8 +701,9 @@ def parse_args() -> argparse.Namespace:
         "--policy-obs-source",
         type=str,
         default="sim",
-        choices=("sim", "dataset"),
-        help="sim: live sim cameras (0.tele.py preprocess); dataset: LeRobot frames (exact train tensors)",
+        choices=("sim", "dataset", "state-dataset-image-sim"),
+        help="sim: live sim image+state; dataset: LeRobot frames; "
+        "state-dataset-image-sim: GT state + sim cameras (drift diagnostic)",
     )
     parser.add_argument(
         "--policy-obs-dataset-episode",
@@ -676,15 +727,33 @@ def parse_args() -> argparse.Namespace:
         "--arm-kp",
         type=float,
         default=None,
-        help="Override arm position actuator kp (default: XML value). Val/sweep only.",
+        help="Advanced: override XML arm position kp (default: keep aubo_i10_inspire.xml)",
     )
     parser.add_argument(
         "--arm-kv",
         type=float,
         default=None,
-        help="Override arm position actuator kv (default: XML value). Val/sweep only.",
+        help="Advanced: override XML arm position kv (default: keep aubo_i10_inspire.xml)",
+    )
+    parser.add_argument(
+        "--qpos-hold-ramp",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="k10 hold: linear setpoint anchor→chunk[0] by hold index (default: constant chunk[0])",
+    )
+    parser.add_argument(
+        "--qpos-exec-via-ik",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Experimental: capped EE delta toward FK(q_policy) then IK. "
+        "Only with stride=1; incompatible with hold ramp.",
     )
     return parser.parse_args()
+
+
+def _log_xml_arm_gains(env) -> None:
+    kp, kv = env.get_arm_position_gains()
+    print(f"Arm actuators (aubo_i10_inspire.xml): kp={kp} kv={kv}")
 
 
 def _apply_arm_actuator_gains(env, args: argparse.Namespace) -> None:
@@ -694,6 +763,82 @@ def _apply_arm_actuator_gains(env, args: argparse.Namespace) -> None:
     kv = float(args.arm_kv if args.arm_kv is not None else env._default_arm_kv)
     env.set_arm_position_gains(kp, kv)
     print(f"Arm actuator gains: kp={kp} kv={kv} (XML default kp={env._default_arm_kp} kv={env._default_arm_kv})")
+
+
+def _qpos_hold_setpoint(
+    q_anchor: np.ndarray,
+    q_target: np.ndarray,
+    hold_stride: int,
+    hold_step: int,
+) -> np.ndarray:
+    """Open-loop setpoint for tick hold_step in [0, K-1] within one replan window."""
+    q_anchor = np.asarray(q_anchor, dtype=np.float64)
+    q_target = np.asarray(q_target, dtype=np.float64)
+    if hold_stride < 2:
+        return q_target.copy()
+    hold_step = int(hold_step)
+    if hold_step < 0 or hold_step >= hold_stride:
+        raise ValueError(f"hold_step {hold_step} out of range [0, {hold_stride - 1}]")
+    alpha = float(hold_step + 1) / float(hold_stride)
+    return q_anchor + alpha * (q_target - q_anchor)
+
+
+def _apply_qpos_exec_mode(env, args: argparse.Namespace) -> None:
+    use_ik = (
+        args.action_type == "qpos"
+        and args.qpos_exec_via_ik
+        and args.action_delta_stride <= 1
+    )
+    env.set_qpos_exec_via_ik(
+        use_ik,
+        max_xyz_step=args.max_ee_xyz_step,
+        max_rpy_step=args.max_ee_rpy_step,
+    )
+    if args.action_type == "qpos":
+        if args.action_delta_stride > 1:
+            if args.qpos_hold_ramp:
+                print(
+                    f"qpos execution: hold ramp setpoint (hold_step+1)/{args.action_delta_stride} "
+                    f"* (chunk[0]-anchor)"
+                )
+            else:
+                print(
+                    f"qpos execution: hold constant chunk[0] setpoint for "
+                    f"{args.action_delta_stride} ticks"
+                )
+        elif use_ik:
+            print(
+                f"qpos execution: FK goal + EE delta (max_xyz={args.max_ee_xyz_step}, "
+                f"max_rpy={args.max_ee_rpy_step}) -> IK"
+            )
+        else:
+            print("qpos execution: direct joint position")
+
+
+def _physics_settle_desc(args: argparse.Namespace) -> str:
+    if args.teleop_tick:
+        return "teleop-tick (1 mj_step)"
+    if args.physics_settle_tol is not None:
+        return (
+            f"tol={args.physics_settle_tol} max_steps={args.physics_settle_max_steps}"
+        )
+    return f"steps={args.physics_settle_steps}"
+
+
+def _physics_settle(env, args: argparse.Namespace) -> tuple[int, float]:
+    if args.teleop_tick:
+        env.step_env()
+        target = np.asarray(env.compute_q[:6], dtype=np.float64)
+        q = np.asarray(
+            env.env.get_qpos_joints(joint_names=env.joint_names), dtype=np.float64
+        )
+        return 1, float(np.linalg.norm(q - target))
+    if args.physics_settle_tol is not None:
+        return env.settle_physics(
+            tol_rad=float(args.physics_settle_tol),
+            max_steps=int(args.physics_settle_max_steps),
+        )
+    return env.settle_physics(steps=int(args.physics_settle_steps))
 
 
 def run_gt_replay(args: argparse.Namespace, trace_dir: Path | None) -> None:
@@ -717,13 +862,15 @@ def run_gt_replay(args: argparse.Namespace, trace_dir: Path | None) -> None:
         state_type="qpos",
         ee_pose_command=ee_cmd,
     )
+    _log_xml_arm_gains(env)
     _apply_arm_actuator_gains(env, args)
+    _apply_qpos_exec_mode(env, args)
     print(
         f"GT replay ep {episode_id}: {n_frames} frames from {os.path.expanduser(args.lerobot_root)}"
     )
     print(
         f"action_type={env.action_type} ee_pose_command={env.ee_pose_command} "
-        f"physics_settle_steps={args.physics_settle_steps} "
+        f"physics_settle={_physics_settle_desc(args)} "
         f"dataset_init={not args.no_replay_dataset_init and obj_init is not None}"
     )
 
@@ -772,8 +919,7 @@ def run_gt_replay(args: argparse.Namespace, trace_dir: Path | None) -> None:
         cmd_norms.append(float(np.linalg.norm(action_np[:6] - state_pre[:6])))
 
         env.step(action_np)
-        for _ in range(args.physics_settle_steps):
-            env.step_env()
+        _physics_settle(env, args)
         qpos_post = np.array(env.get_joint_state(), dtype=np.float32)
         track_errs.append(float(np.linalg.norm(action_np[:6] - qpos_post[:6])))
 
@@ -876,7 +1022,9 @@ def main() -> None:
         state_type="qpos",
         ee_pose_command=ee_cmd,
     )
+    _log_xml_arm_gains(env)
     _apply_arm_actuator_gains(env, args)
+    _apply_qpos_exec_mode(env, args)
     ee_guard = args.action_type == "ee_pose" and not args.no_ee_guard
     print(
         f"action_type: {env.action_type}, state_type: {env.state_type}, "
@@ -906,7 +1054,7 @@ def main() -> None:
     print(
         f"Starting evaluation: {args.num_episodes} episodes, "
         f"replan_steps={args.replan_steps}, action_delta_stride={args.action_delta_stride}, "
-        f"physics_settle_steps={args.physics_settle_steps}, "
+        f"physics_settle={_physics_settle_desc(args)}, "
         f"policy_obs_source={args.policy_obs_source}"
     )
     if args.action_delta_stride > 1:
@@ -916,7 +1064,7 @@ def main() -> None:
         )
 
     dataset_obs: _DatasetPolicyObsStream | None = None
-    if args.policy_obs_source == "dataset":
+    if args.policy_obs_source in ("dataset", "state-dataset-image-sim"):
         obs_ep = int(args.policy_obs_dataset_episode)
         if args.dataset_init_episode is None:
             args.dataset_init_episode = obs_ep
@@ -925,10 +1073,16 @@ def main() -> None:
                 f"(match --policy-obs-dataset-episode for layout alignment)"
             )
         dataset_obs = _DatasetPolicyObsStream(args.lerobot_root, obs_ep)
-        print(
-            f"Policy observations from LeRobot ep {dataset_obs.episode_id} "
-            f"({len(dataset_obs)} frames) — same tensors as training dataloader repack"
-        )
+        if args.policy_obs_source == "dataset":
+            print(
+                f"Policy observations from LeRobot ep {dataset_obs.episode_id} "
+                f"({len(dataset_obs)} frames) — same tensors as training dataloader repack"
+            )
+        else:
+            print(
+                f"Policy obs hybrid: state from LeRobot ep {dataset_obs.episode_id}, "
+                f"images from sim ({len(dataset_obs)} frames)"
+            )
 
     for episode in range(args.num_episodes):
         if args.dataset_init_episode is not None:
@@ -941,6 +1095,8 @@ def main() -> None:
         else:
             env.reset()
         action_plan: collections.deque[np.ndarray] = collections.deque()
+        qpos_hold_anchor: np.ndarray | None = None
+        qpos_hold_target: np.ndarray | None = None
         step = 0
         episode_success = False
         video_recorder.start_episode(episode)
@@ -962,7 +1118,7 @@ def main() -> None:
             if not env.env.loop_every(HZ=HZ):
                 continue
 
-            if dataset_obs is not None:
+            if args.policy_obs_source == "dataset":
                 if step >= len(dataset_obs):
                     print(
                         f"Episode {episode + 1}: dataset obs exhausted at step {step} "
@@ -975,6 +1131,24 @@ def main() -> None:
                 wrist_img = element["observation/wrist_image"]
                 # Policy obs from LeRobot; live sim cameras for viewer overlay + video.
                 agent_raw, wrist_raw = env.grab_image()
+            elif args.policy_obs_source == "state-dataset-image-sim":
+                if step >= len(dataset_obs):
+                    print(
+                        f"Episode {episode + 1}: dataset obs exhausted at step {step} "
+                        f"(len={len(dataset_obs)})"
+                    )
+                    break
+                _, agent_img, wrist_img, agent_raw, wrist_raw, _ = (
+                    _tele_observation_frame(env, args.prompt)
+                )
+                ds_element = dataset_obs.obs_at(step, args.prompt)
+                state_pre = _as_state(ds_element["observation/state"])
+                element = {
+                    "observation/image": agent_img,
+                    "observation/wrist_image": wrist_img,
+                    "observation/state": state_pre,
+                    "prompt": args.prompt,
+                }
             else:
                 state_pre, agent_img, wrist_img, agent_raw, wrist_raw, element = (
                     _tele_observation_frame(env, args.prompt)
@@ -1032,6 +1206,9 @@ def main() -> None:
                 if args.action_delta_stride > 1:
                     # Plan C: chunk[0] = target at t+K; hold for K ticks (do not use chunk[1..]).
                     target = np.asarray(chunk[0, :7], dtype=np.float64)
+                    if args.action_type == "qpos":
+                        qpos_hold_anchor = np.asarray(state_pre[:6], dtype=np.float64)
+                        qpos_hold_target = target[:6].copy()
                     for _ in range(args.action_delta_stride):
                         action_plan.append(target.copy())
                 else:
@@ -1040,6 +1217,22 @@ def main() -> None:
                         action_plan.append(np.asarray(chunk[i, :7], dtype=np.float64))
 
             action_np = action_plan.popleft()
+            if (
+                args.action_type == "qpos"
+                and args.action_delta_stride > 1
+                and args.qpos_hold_ramp
+                and qpos_hold_anchor is not None
+                and qpos_hold_target is not None
+            ):
+                hold_remaining = len(action_plan) + 1
+                hold_step = args.action_delta_stride - hold_remaining
+                action_np = np.asarray(action_np, dtype=np.float64).copy()
+                action_np[:6] = _qpos_hold_setpoint(
+                    qpos_hold_anchor,
+                    qpos_hold_target,
+                    args.action_delta_stride,
+                    hold_step,
+                )
             if ee_guard:
                 if ee_pre is None:
                     ee_pre = _as_state(env.get_ee_pose())
@@ -1055,9 +1248,7 @@ def main() -> None:
                     )
 
             env.step(action_np)
-            # Advance sim so state_post matches training "actions = q after step".
-            for _ in range(args.physics_settle_steps):
-                env.step_env()
+            _physics_settle(env, args)
             qpos_post = _as_state(env.get_joint_state())
             ee_post = (
                 _as_state(env.get_ee_pose()) if args.action_type == "ee_pose" else None

@@ -1,0 +1,112 @@
+{
+  "summary": {
+    "source": "gt",
+    "gt_episode": 0,
+    "max_steps": 120,
+    "xml_kp": 10000.0,
+    "xml_kv": 1000.0,
+    "sweep_actuator_gains": false,
+    "best_stable": {
+      "kp": 10000.0,
+      "kv": 1000.0,
+      "settle_steps": 100,
+      "steps": 120,
+      "cmd_mean": 0.023916279233186125,
+      "track_mean": 0.017369458869211558,
+      "track_cmd_ratio_mean": 0.9191058056986798,
+      "track_cmd_ratio_p90": 1.0094689243727213,
+      "efficiency_mean": 0.08089419430132015,
+      "cube_disp_m": 0.002895615168125587,
+      "cube_on_table_end": true,
+      "cube_fell_step": null
+    },
+    "best_any": {
+      "kp": 10000.0,
+      "kv": 1000.0,
+      "settle_steps": 100,
+      "steps": 120,
+      "cmd_mean": 0.023916279233186125,
+      "track_mean": 0.017369458869211558,
+      "track_cmd_ratio_mean": 0.9191058056986798,
+      "track_cmd_ratio_p90": 1.0094689243727213,
+      "efficiency_mean": 0.08089419430132015,
+      "cube_disp_m": 0.002895615168125587,
+      "cube_on_table_end": true,
+      "cube_fell_step": null
+    },
+    "n_configs": 5,
+    "n_stable": 5
+  },
+  "results": [
+    {
+      "kp": 10000.0,
+      "kv": 1000.0,
+      "settle_steps": 1,
+      "steps": 120,
+      "cmd_mean": 0.2226740016973748,
+      "track_mean": 0.221655530295179,
+      "track_cmd_ratio_mean": 0.9956113115814135,
+      "track_cmd_ratio_p90": 0.9962549772716933,
+      "efficiency_mean": 0.004388688418586579,
+      "cube_disp_m": 0.0028950449522505695,
+      "cube_on_table_end": true,
+      "cube_fell_step": null
+    },
+    {
+      "kp": 10000.0,
+      "kv": 1000.0,
+      "settle_steps": 10,
+      "steps": 120,
+      "cmd_mean": 0.10056902315228795,
+      "track_mean": 0.09603655704448398,
+      "track_cmd_ratio_mean": 0.9648071416913856,
+      "track_cmd_ratio_p90": 0.9658368530293836,
+      "efficiency_mean": 0.03519285830861447,
+      "cube_disp_m": 0.002895615168125587,
+      "cube_on_table_end": true,
+      "cube_fell_step": null
+    },
+    {
+      "kp": 10000.0,
+      "kv": 1000.0,
+      "settle_steps": 20,
+      "steps": 120,
+      "cmd_mean": 0.0632943707286913,
+      "track_mean": 0.05794780745297752,
+      "track_cmd_ratio_mean": 0.9692988744664144,
+      "track_cmd_ratio_p90": 1.0323509922735166,
+      "efficiency_mean": 0.030701125533585526,
+      "cube_disp_m": 0.002895615168125587,
+      "cube_on_table_end": true,
+      "cube_fell_step": null
+    },
+    {
+      "kp": 10000.0,
+      "kv": 1000.0,
+      "settle_steps": 50,
+      "steps": 120,
+      "cmd_mean": 0.035575342491242064,
+      "track_mean": 0.02920287791845376,
+      "track_cmd_ratio_mean": 0.9788409096788493,
+      "track_cmd_ratio_p90": 1.0377146669951303,
+      "efficiency_mean": 0.021159090321150747,
+      "cube_disp_m": 0.002895615168125587,
+      "cube_on_table_end": true,
+      "cube_fell_step": null
+    },
+    {
+      "kp": 10000.0,
+      "kv": 1000.0,
+      "settle_steps": 100,
+      "steps": 120,
+      "cmd_mean": 0.023916279233186125,
+      "track_mean": 0.017369458869211558,
+      "track_cmd_ratio_mean": 0.9191058056986798,
+      "track_cmd_ratio_p90": 1.0094689243727213,
+      "efficiency_mean": 0.08089419430132015,
+      "cube_disp_m": 0.002895615168125587,
+      "cube_on_table_end": true,
+      "cube_fell_step": null
+    }
+  ]
+}

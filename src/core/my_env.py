@@ -160,12 +160,18 @@ class MyEnv:
         ik_gain: float = 0.6,
         # ee_pose only: "delta" = keyboard teleop (dpos/drot per step); "absolute" = policy target pose.
         ee_pose_command: str = "delta",
+        # qpos val only: FK(policy joints) -> IK from current q (matches 0.tele.py EE->IK chain).
+        qpos_exec_via_ik: bool = False,
     ) -> None:
         model_path = xml_path
         self.env = MuJoCoParserClass(name="myenv", rel_xml_path=model_path)
         self.action_type = action_type
         self.state_type = state_type
         self.ee_pose_command = ee_pose_command
+        self.qpos_exec_via_ik = bool(qpos_exec_via_ik)
+        # Match 0.tele.py / eval_action_guard per-step EE caps when qpos_exec_via_ik is on.
+        self.qpos_exec_max_xyz_step = 0.005
+        self.qpos_exec_max_rpy_step = 0.08
         self.joint_names = [
             "shoulder_joint",
             "upperArm_joint",
@@ -350,6 +356,64 @@ class MyEnv:
         self.gripper_close = True
         print("DONE INITIALIZATION (recorded layout)")
 
+    def set_qpos_exec_via_ik(
+        self,
+        enabled: bool,
+        *,
+        max_xyz_step: float = 0.005,
+        max_rpy_step: float = 0.08,
+    ) -> None:
+        """Val: FK(q_policy) defines EE goal; reach it with capped EE deltas + IK (like 0.tele.py)."""
+        self.qpos_exec_via_ik = bool(enabled)
+        self.qpos_exec_max_xyz_step = float(max_xyz_step)
+        self.qpos_exec_max_rpy_step = float(max_rpy_step)
+
+    def _wrap_pi(self, angles: np.ndarray) -> np.ndarray:
+        return ((np.asarray(angles, dtype=np.float64) + np.pi) % (2 * np.pi)) - np.pi
+
+    def _qpos_via_ee_delta_toward_fk(self, q_target_arm: np.ndarray) -> np.ndarray:
+        """One teleop-scale EE step toward FK(q_policy), then IK from current q."""
+        p_tgt, R_tgt = self._fk_flange_pose_for_arm_q(q_target_arm)
+        p_cur, R_cur = self.env.get_pR_body(body_name="i10_inspire_flange_link")
+        dp = np.asarray(p_tgt - p_cur, dtype=np.float64)
+        dn = float(np.linalg.norm(dp))
+        if dn > self.qpos_exec_max_xyz_step:
+            dp = dp * (self.qpos_exec_max_xyz_step / dn)
+        p_step = p_cur + dp
+        rpy_tgt = r2rpy(R_tgt)
+        rpy_cur = r2rpy(R_cur)
+        drpy = self._wrap_pi(rpy_tgt - rpy_cur)
+        drpy = np.clip(drpy, -self.qpos_exec_max_rpy_step, self.qpos_exec_max_rpy_step)
+        R_step = rpy2r(rpy_cur + drpy)
+        return self._ik_arm_to_flange(p_step, R_step)
+
+    def _fk_flange_pose_for_arm_q(self, q_arm: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Flange (p, R) at arm joints q_arm; restores sim state after FK."""
+        q_arm = np.asarray(q_arm, dtype=np.float64)
+        self.env.store_state()
+        self.env.forward(q=q_arm, joint_names=self.joint_names, increase_tick=False)
+        p_trgt, R_trgt = self.env.get_pR_body(body_name="i10_inspire_flange_link")
+        self.env.restore_state()
+        return p_trgt, R_trgt
+
+    def _ik_arm_to_flange(self, p_trgt: np.ndarray, R_trgt: np.ndarray) -> np.ndarray:
+        q_init = self.env.get_qpos_joints(joint_names=self.joint_names)
+        q, _, _ = solve_ik(
+            env=self.env,
+            joint_names_for_ik=self.joint_names,
+            body_name_trgt="i10_inspire_flange_link",
+            q_init=q_init,
+            p_trgt=np.asarray(p_trgt, dtype=np.float64),
+            R_trgt=np.asarray(R_trgt, dtype=np.float64),
+            max_ik_tick=50,
+            ik_stepsize=1.0,
+            ik_eps=1e-2,
+            ik_th=np.radians(5.0),
+            render=False,
+            verbose_warning=False,
+        )
+        return q
+
     def step(self, action):
         """
         Take a step in the environment
@@ -390,7 +454,11 @@ class MyEnv:
         elif self.action_type == "delta_qpos":
             q = action[:-1] + self.last_q
         elif self.action_type == "qpos":
-            q = action[:-1]
+            q_target = np.asarray(action[:-1], dtype=np.float64)
+            if self.qpos_exec_via_ik:
+                q = self._qpos_via_ee_delta_toward_fk(q_target)
+            else:
+                q = q_target
         else:
             raise ValueError("action_type not recognized")
 
@@ -414,6 +482,43 @@ class MyEnv:
 
     def step_env(self):
         self.env.step(self.q)
+
+    def settle_physics(
+        self,
+        *,
+        steps: int = 1,
+        tol_rad: float | None = None,
+        max_steps: int = 200,
+    ) -> tuple[int, float]:
+        """Run mj_step with the current ctrl target until the arm catches up or budget is spent.
+
+        0.tele.py spins ~int(1/dt/HZ) mj_steps between 20Hz ticks; val used only 1 step after
+        step(action), so position actuators lagged. Call this right after step(action).
+        """
+        if steps < 1:
+            raise ValueError(f"steps must be >= 1, got {steps}")
+        if max_steps < 1:
+            raise ValueError(f"max_steps must be >= 1, got {max_steps}")
+        target = np.asarray(self.compute_q[:6], dtype=np.float64)
+        ran = 0
+        if tol_rad is not None:
+            while ran < max_steps:
+                self.step_env()
+                ran += 1
+                q = np.asarray(
+                    self.env.get_qpos_joints(joint_names=self.joint_names), dtype=np.float64
+                )
+                err = float(np.linalg.norm(q - target))
+                if err <= tol_rad:
+                    return ran, err
+        else:
+            for _ in range(steps):
+                self.step_env()
+                ran += 1
+        q = np.asarray(
+            self.env.get_qpos_joints(joint_names=self.joint_names), dtype=np.float64
+        )
+        return ran, float(np.linalg.norm(q - target))
 
     def grab_image(self):
         """

@@ -345,7 +345,13 @@ def ensure_meta_jsonl(dataset_root: Path, task: str | None = None) -> None:
     subprocess.run(cmd, check=True)
 
 
-def convert_to_v21(dataset_root: Path, repo_id: str, num_workers: int) -> None:
+def convert_to_v21(
+    dataset_root: Path,
+    repo_id: str,
+    num_workers: int,
+    *,
+    verify_stats: bool = False,
+) -> None:
     """v2.0 -> v2.1 on local disk: episodes_stats.jsonl, drop global stats.json, no Hub."""
     print("\n=== LeRobot v2.0 -> v2.1 (local) ===")
     from lerobot.common.datasets.lerobot_dataset import CODEBASE_VERSION, LeRobotDataset
@@ -371,25 +377,33 @@ def convert_to_v21(dataset_root: Path, repo_id: str, num_workers: int) -> None:
         ep_stats_path.unlink()
 
     convert_stats(ds, num_workers=num_workers)
-    ref_stats = load_stats(dataset_root)
-    check_aggregate_stats(ds, ref_stats)
+
+    stats_path = dataset_root / STATS_PATH
+    if verify_stats and stats_path.is_file():
+        ref_stats = load_stats(dataset_root)
+        check_aggregate_stats(ds, ref_stats)
+    elif stats_path.is_file():
+        print(
+            "  Skipping check_aggregate_stats: copied v3 stats.json often has wrong "
+            "video/image std; per-episode stats from convert_stats are authoritative. "
+            "Pass --verify-v21-stats to enforce the upstream check."
+        )
 
     ds.meta.info["codebase_version"] = CODEBASE_VERSION
     write_info(ds.meta.info, dataset_root)
 
-    old_stats = dataset_root / STATS_PATH
-    if old_stats.is_file():
-        old_stats.unlink()
+    if stats_path.is_file():
+        stats_path.unlink()
 
     print(f"  {dataset_root}: codebase_version={CODEBASE_VERSION}")
 
 
 def main(
     src_root: str = os.path.expanduser(
-        "~/MyI10Tele/data_auboI10_ee_pose_v30_continuous"
+        "~/MyI10Tele/data_auboI10_ee_pose_v30_continuous_correctobjinit"
     ),
     dst_root: str = os.path.expanduser(
-        "~/MyI10Tele/data_auboI10_ee_pose_v21_continuous"
+        "~/MyI10Tele/data_auboI10_ee_pose_v21_continuous_correct_objinit"
     ),
     fps: float = 20.0,
     cameras: list[str] | None = None,
@@ -400,6 +414,7 @@ def main(
     clean: bool = False,
     to_v21: bool = True,
     v21_only: bool = False,
+    verify_v21_stats: bool = False,
     repo_id: str = "auboI10",
     task: str | None = None,
     v21_num_workers: int = max(1, os.cpu_count()),
@@ -408,6 +423,8 @@ def main(
 
     ``to_v21``: after v2.0 split, upgrade ``dst_root`` to LeRobot v2.1 (local, no Hub).
     ``v21_only``: only run v2.0->v2.1 on existing ``dst_root`` (skip v3 split).
+    ``verify_v21_stats``: run lerobot's check_aggregate_stats against meta/stats.json
+    (usually fails when stats were copied from v3.0 — video std differs from recomputed).
     Use openpi venv (``lerobot`` installed). Safe with ``HF_HUB_OFFLINE=1``.
     """
     dst = Path(dst_root)
@@ -415,7 +432,12 @@ def main(
         if not (dst / "meta" / "info.json").exists():
             raise FileNotFoundError(f"Missing {dst / 'meta' / 'info.json'}")
         ensure_meta_jsonl(dst, task=task)
-        convert_to_v21(dst, repo_id=repo_id, num_workers=v21_num_workers)
+        convert_to_v21(
+            dst,
+            repo_id=repo_id,
+            num_workers=v21_num_workers,
+            verify_stats=verify_v21_stats,
+        )
         print("\nDone (v2.1 only):", dst)
         return
 
@@ -463,7 +485,12 @@ def main(
 
     if to_v21:
         ensure_meta_jsonl(dst, task=task)
-        convert_to_v21(dst, repo_id=repo_id, num_workers=v21_num_workers)
+        convert_to_v21(
+            dst,
+            repo_id=repo_id,
+            num_workers=v21_num_workers,
+            verify_stats=verify_v21_stats,
+        )
 
     print("\nDone. Point openpi --data.lerobot-root to:", dst)
     if to_v21:
