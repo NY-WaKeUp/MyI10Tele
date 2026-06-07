@@ -48,7 +48,7 @@ from matplotlib.widgets import Slider
 from tqdm.auto import tqdm
 
 from core.dataset_config import ACTION_LABEL, REPO_NAME, dataset_root
-from core.my_policy import MyPIPolicy, MyPolicy, resolve_paligemma_tokenizer_path
+from core.my_policy import MyPIPolicy, MyPolicy, load_paligemma_tokenizer
 
 ACTION_DIM_LABELS = (
     ["x", "y", "z", "roll", "pitch", "yaw", "gripper"]
@@ -171,8 +171,7 @@ def load_pi0_policy(checkpoint: str, device: torch.device):
     )
     policy.to(device)
     policy.eval()
-    tok_src, tok_local = resolve_paligemma_tokenizer_path(allow_hub_download=False)
-    tokenizer = AutoTokenizer.from_pretrained(tok_src, local_files_only=tok_local)
+    tokenizer = load_paligemma_tokenizer(allow_hub_download=False)
     tokenizer.padding_side = "right"
     pi_lang = MyPIPolicy(tokenizer, cfg.tokenizer_max_length)
     return policy, pi_lang

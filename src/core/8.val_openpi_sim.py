@@ -26,7 +26,17 @@ Prerequisites
 
    cd /home/ningyu/MyI10Tele
    PYTHONPATH=src python src/core/8.val_openpi_sim.py \\
-     --trace-dir ./openpi_eval_trace
+     --action-type qpos --replan-steps 1 \\
+     --dataset-init-episode 0 \\
+     --lerobot-root ~/MyI10Tele/data_auboI10_qpos_v21_continuous
+
+   Feed policy **exact training tensors** (pixels + state + task) while sim still executes actions::
+
+   PYTHONPATH=src python src/core/8.val_openpi_sim.py \\
+     --action-type qpos --replan-steps 1 \\
+     --action-delta-stride 10 \\
+     --policy-obs-source sim \\
+     --trace-dir ./openpi_eval_trace_qpos_k10
 
    GT open-loop replay (no policy server; same episode as eval_dataset ep0)::
 
@@ -34,6 +44,7 @@ Prerequisites
      --action-type qpos --teleop-render \\
      --replay-gt-episode 0 \\
      --lerobot-root ~/MyI10Tele/data_auboI10_qpos_v21_continuous \\
+     --physics-settle-steps 1 \\
      --trace-dir ./openpi_eval_trace_gt_ep0
 
 4. Inspect traces:
@@ -52,27 +63,66 @@ from pathlib import Path
 
 import numpy as np
 
-from core.dataset_config import AUBOI10_QPOS_ROOT_CONTINUOUS, policy_ee_pose_command
+from core.dataset_config import AUBOI10_QPOS_ROOT_CONTINUOUS, TASK_NAME, policy_ee_pose_command
 from core.eval_action_guard import (
     clamp_absolute_ee_action,
     cube_on_table,
     cube_pose,
 )
+from core.openpi_obs import (
+    build_openpi_observation_from_lerobot_item,
+    build_openpi_observation_from_sim,
+    preprocess_lerobot_image,
+)
 
 # MuJoCo viewer display (change if needed)
 os.environ.setdefault("DISPLAY", ":51.0")
 
-TASK_NAME = "Put cube on the black platform"
 XML_PATH = os.path.expanduser("~/MyI10Tele/assets/aubo_i10_inspire/myscene.xml")
 HZ = 20
 
 
-def _preprocess_image(img: np.ndarray, size: int) -> np.ndarray:
-    # Import lazily so `--trace-analyze-only` works without openpi-client installed.
-    from openpi_client import image_tools
+def _tele_observation_frame(env, prompt: str) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, dict]:
+    """One 20Hz tick: 0.tele.py order (pre_state → grab → resize) → policy dict."""
+    pre_state = np.array(env.get_joint_state(), dtype=np.float32)
+    agent_raw, wrist_raw = env.grab_image()
+    element = build_openpi_observation_from_sim(agent_raw, wrist_raw, pre_state, prompt)
+    return (
+        pre_state,
+        element["observation/image"],
+        element["observation/wrist_image"],
+        agent_raw,
+        wrist_raw,
+        element,
+    )
 
-    img = np.asarray(img)
-    return image_tools.convert_to_uint8(image_tools.resize_with_pad(img, size, size))
+
+class _DatasetPolicyObsStream:
+    """LeRobot episode observations — same tensors training dataloader repacks for the model."""
+
+    def __init__(self, lerobot_root: str, episode_id: int, repo_id: str = "auboI10") -> None:
+        import lerobot.common.datasets.lerobot_dataset as lerobot_dataset
+
+        root = os.path.expanduser(lerobot_root)
+        self._meta = lerobot_dataset.LeRobotDatasetMetadata(repo_id, root=root)
+        self._dataset = lerobot_dataset.LeRobotDataset(repo_id, root=root)
+        self._indices = _episode_indices(self._dataset, episode_id)
+        self._tasks = self._meta.tasks
+        self.episode_id = episode_id
+
+    def __len__(self) -> int:
+        return len(self._indices)
+
+    def obs_at(self, step: int, default_prompt: str) -> dict:
+        if step >= len(self._indices):
+            raise IndexError(f"step {step} >= dataset episode length {len(self._indices)}")
+        item = self._dataset[int(self._indices[step])]
+        return build_openpi_observation_from_lerobot_item(item, self._tasks, default_prompt)
+
+
+def _episode_indices(dataset, episode_id: int) -> np.ndarray:
+    ep_table = dataset.hf_dataset.filter(lambda x: x["episode_index"] == episode_id)
+    return np.array(ep_table["index"], dtype=np.int64)
 
 
 def _as_state(state) -> np.ndarray:
@@ -163,21 +213,6 @@ def _snap_robot_to_state(env, state7: np.ndarray) -> None:
 
 def _apply_obj_init(env, obj_init: np.ndarray) -> None:
     env.apply_scene_layout(obj_init, settle=False)
-
-
-def _build_observation(
-    agent_img: np.ndarray,
-    wrist_img: np.ndarray,
-    state: np.ndarray,
-    prompt: str,
-    resize_size: int,
-) -> dict:
-    return {
-        "observation/image": _preprocess_image(agent_img, resize_size),
-        "observation/wrist_image": _preprocess_image(wrist_img, resize_size),
-        "observation/state": np.asarray(state, dtype=np.float32),
-        "prompt": prompt,
-    }
 
 
 class EpisodeTrace:
@@ -493,16 +528,17 @@ def parse_args() -> argparse.Namespace:
         "--port", type=int, default=8000, help="openpi serve_policy port"
     )
     parser.add_argument(
-        "--resize-size",
-        type=int,
-        default=256,
-        help="Image edge length sent to the policy (training data uses 256)",
-    )
-    parser.add_argument(
         "--replan-steps",
         type=int,
         default=1,
-        help="Actions per chunk before re-infer (1 = safest for ee_pose; horizon is 10)",
+        help="Actions per chunk before re-infer (stride=1 configs only); ignored when --action-delta-stride>1",
+    )
+    parser.add_argument(
+        "--action-delta-stride",
+        type=int,
+        default=1,
+        metavar="K",
+        help="Plan C / k10: re-infer every K sim steps; hold chunk[0] (q_{t+K}) for K ticks. Match train action_delta_stride.",
     )
     parser.add_argument(
         "--prompt",
@@ -519,6 +555,14 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--max-steps", type=int, default=600, help="Max control steps per episode"
+    )
+    parser.add_argument(
+        "--physics-settle-steps",
+        type=int,
+        default=1,
+        metavar="N",
+        help="MuJoCo mj_step count after each action (default 1 matches 0.tele.py); "
+        "increase for absolute ee/qpos tracking when actuators lag",
     )
     parser.add_argument(
         "--video-dir",
@@ -542,7 +586,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--trace-episodes",
         type=int,
-        default=3,
+        default=0,
         help="Number of episodes to trace (from the start); 0 = trace all",
     )
     parser.add_argument(
@@ -594,7 +638,28 @@ def parse_args() -> argparse.Namespace:
         "--lerobot-root",
         type=str,
         default=AUBOI10_QPOS_ROOT_CONTINUOUS,
-        help="LeRobot root for --replay-gt-episode",
+        help="LeRobot root for GT replay / --dataset-init-episode",
+    )
+    parser.add_argument(
+        "--dataset-init-episode",
+        type=int,
+        default=None,
+        metavar="EP",
+        help="Restore obj_init + frame-0 qpos from this dataset episode each rollout (train/eval layout match)",
+    )
+    parser.add_argument(
+        "--policy-obs-source",
+        type=str,
+        default="sim",
+        choices=("sim", "dataset"),
+        help="sim: live sim cameras (0.tele.py preprocess); dataset: LeRobot frames (exact train tensors)",
+    )
+    parser.add_argument(
+        "--policy-obs-dataset-episode",
+        type=int,
+        default=0,
+        metavar="EP",
+        help="LeRobot episode for --policy-obs-source=dataset (must match --lerobot-root / train data)",
     )
     parser.add_argument(
         "--replay-max-frames",
@@ -607,7 +672,28 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="After reset, do not restore cube/platform from dataset obj_init",
     )
+    parser.add_argument(
+        "--arm-kp",
+        type=float,
+        default=None,
+        help="Override arm position actuator kp (default: XML value). Val/sweep only.",
+    )
+    parser.add_argument(
+        "--arm-kv",
+        type=float,
+        default=None,
+        help="Override arm position actuator kv (default: XML value). Val/sweep only.",
+    )
     return parser.parse_args()
+
+
+def _apply_arm_actuator_gains(env, args: argparse.Namespace) -> None:
+    if args.arm_kp is None and args.arm_kv is None:
+        return
+    kp = float(args.arm_kp if args.arm_kp is not None else env._default_arm_kp)
+    kv = float(args.arm_kv if args.arm_kv is not None else env._default_arm_kv)
+    env.set_arm_position_gains(kp, kv)
+    print(f"Arm actuator gains: kp={kp} kv={kv} (XML default kp={env._default_arm_kp} kv={env._default_arm_kv})")
 
 
 def run_gt_replay(args: argparse.Namespace, trace_dir: Path | None) -> None:
@@ -631,11 +717,13 @@ def run_gt_replay(args: argparse.Namespace, trace_dir: Path | None) -> None:
         state_type="qpos",
         ee_pose_command=ee_cmd,
     )
+    _apply_arm_actuator_gains(env, args)
     print(
         f"GT replay ep {episode_id}: {n_frames} frames from {os.path.expanduser(args.lerobot_root)}"
     )
     print(
         f"action_type={env.action_type} ee_pose_command={env.ee_pose_command} "
+        f"physics_settle_steps={args.physics_settle_steps} "
         f"dataset_init={not args.no_replay_dataset_init and obj_init is not None}"
     )
 
@@ -670,22 +758,23 @@ def run_gt_replay(args: argparse.Namespace, trace_dir: Path | None) -> None:
     track_errs: list[float] = []
     cmd_norms: list[float] = []
 
+    # 0.tele.py body per 20Hz tick: step_env → pre_state → grab → act → step_env → render
     while env.env.is_viewer_alive() and step < n_frames:
         env.step_env()
         if not env.env.loop_every(HZ=HZ):
             continue
 
-        agent_img, wrist_img = env.grab_image()
-        env.render(teleop=args.teleop_render)
-        video_recorder.record_frame(agent_img, wrist_img)
+        state_pre = np.array(env.get_joint_state(), dtype=np.float32)
+        agent_raw, wrist_raw = env.grab_image()
+        video_recorder.record_frame(agent_raw, wrist_raw)
 
-        state_pre = _as_state(env.get_joint_state())
         action_np = np.asarray(actions[step], dtype=np.float64)
         cmd_norms.append(float(np.linalg.norm(action_np[:6] - state_pre[:6])))
 
         env.step(action_np)
-        env.step_env()
-        qpos_post = _as_state(env.get_joint_state())
+        for _ in range(args.physics_settle_steps):
+            env.step_env()
+        qpos_post = np.array(env.get_joint_state(), dtype=np.float32)
         track_errs.append(float(np.linalg.norm(action_np[:6] - qpos_post[:6])))
 
         if trace is not None:
@@ -767,6 +856,11 @@ def main() -> None:
     from core.my_env import MyEnv
     from core.videos.episode_video_recorder import EpisodeVideoRecorder
 
+    if args.action_delta_stride > 1 and args.replan_steps > 1:
+        raise ValueError(
+            "--action-delta-stride>1 always uses chunk[0] only; set --replan-steps 1"
+        )
+
     print(f"Connecting to openpi server at {args.host}:{args.port} ...")
     client = websocket_client_policy.WebsocketClientPolicy(
         host=args.host, port=args.port
@@ -782,6 +876,7 @@ def main() -> None:
         state_type="qpos",
         ee_pose_command=ee_cmd,
     )
+    _apply_arm_actuator_gains(env, args)
     ee_guard = args.action_type == "ee_pose" and not args.no_ee_guard
     print(
         f"action_type: {env.action_type}, state_type: {env.state_type}, "
@@ -809,11 +904,42 @@ def main() -> None:
     successful_episodes = 0
     all_summaries: list[dict] = []
     print(
-        f"Starting evaluation: {args.num_episodes} episodes, replan_steps={args.replan_steps}"
+        f"Starting evaluation: {args.num_episodes} episodes, "
+        f"replan_steps={args.replan_steps}, action_delta_stride={args.action_delta_stride}, "
+        f"physics_settle_steps={args.physics_settle_steps}, "
+        f"policy_obs_source={args.policy_obs_source}"
     )
+    if args.action_delta_stride > 1:
+        print(
+            f"k10 mode: infer every {args.action_delta_stride} sim steps, "
+            f"hold chunk[0] (q_{{t+{args.action_delta_stride}}}) each cycle"
+        )
+
+    dataset_obs: _DatasetPolicyObsStream | None = None
+    if args.policy_obs_source == "dataset":
+        obs_ep = int(args.policy_obs_dataset_episode)
+        if args.dataset_init_episode is None:
+            args.dataset_init_episode = obs_ep
+            print(
+                f"Auto --dataset-init-episode {obs_ep} "
+                f"(match --policy-obs-dataset-episode for layout alignment)"
+            )
+        dataset_obs = _DatasetPolicyObsStream(args.lerobot_root, obs_ep)
+        print(
+            f"Policy observations from LeRobot ep {dataset_obs.episode_id} "
+            f"({len(dataset_obs)} frames) — same tensors as training dataloader repack"
+        )
 
     for episode in range(args.num_episodes):
-        env.reset()
+        if args.dataset_init_episode is not None:
+            init_ep = int(args.dataset_init_episode)
+            states0, _, obj_init = _load_gt_episode(args.lerobot_root, init_ep)
+            env.reset_with_recorded_layout(obj_init, seed=args.seed)
+            _snap_robot_to_state(env, states0[0])
+            for _ in range(10):
+                env.step_env()
+        else:
+            env.reset()
         action_plan: collections.deque[np.ndarray] = collections.deque()
         step = 0
         episode_success = False
@@ -830,17 +956,31 @@ def main() -> None:
             else None
         )
 
-        # Match 0.tele.py: step_env first, then read state / act / step_env / render.
+        # 0.tele.py: step_env → loop_every → obs → (infer) → step → step_env → render
         while env.env.is_viewer_alive() and step < args.max_steps:
             env.step_env()
             if not env.env.loop_every(HZ=HZ):
                 continue
 
-            agent_img, wrist_img = env.grab_image()
-            # Refresh viewer while policy infers (otherwise window stays black for minutes).
-            env.render(teleop=args.teleop_render)
-            video_recorder.record_frame(agent_img, wrist_img)
-            state_pre = _as_state(env.get_joint_state())
+            if dataset_obs is not None:
+                if step >= len(dataset_obs):
+                    print(
+                        f"Episode {episode + 1}: dataset obs exhausted at step {step} "
+                        f"(len={len(dataset_obs)})"
+                    )
+                    break
+                element = dataset_obs.obs_at(step, args.prompt)
+                state_pre = _as_state(element["observation/state"])
+                agent_img = element["observation/image"]
+                wrist_img = element["observation/wrist_image"]
+                # Policy obs from LeRobot; live sim cameras for viewer overlay + video.
+                agent_raw, wrist_raw = env.grab_image()
+            else:
+                state_pre, agent_img, wrist_img, agent_raw, wrist_raw, element = (
+                    _tele_observation_frame(env, args.prompt)
+                )
+
+            video_recorder.record_frame(agent_raw, wrist_raw)
             ee_pre = (
                 _as_state(env.get_ee_pose()) if args.action_type == "ee_pose" else None
             )
@@ -849,9 +989,6 @@ def main() -> None:
             replan = False
             if not action_plan:
                 replan = True
-                element = _build_observation(
-                    agent_img, wrist_img, state_pre, args.prompt, args.resize_size
-                )
                 if trace is not None:
                     trace.maybe_save_images(agent_img, wrist_img, step)
                 print(
@@ -892,9 +1029,15 @@ def main() -> None:
                         action_type=args.action_type,
                         ee_pre=ee_pre,
                     )
-                n_take = min(args.replan_steps, len(chunk))
-                for i in range(n_take):
-                    action_plan.append(np.asarray(chunk[i, :7], dtype=np.float64))
+                if args.action_delta_stride > 1:
+                    # Plan C: chunk[0] = target at t+K; hold for K ticks (do not use chunk[1..]).
+                    target = np.asarray(chunk[0, :7], dtype=np.float64)
+                    for _ in range(args.action_delta_stride):
+                        action_plan.append(target.copy())
+                else:
+                    n_take = min(args.replan_steps, len(chunk))
+                    for i in range(n_take):
+                        action_plan.append(np.asarray(chunk[i, :7], dtype=np.float64))
 
             action_np = action_plan.popleft()
             if ee_guard:
@@ -913,7 +1056,8 @@ def main() -> None:
 
             env.step(action_np)
             # Advance sim so state_post matches training "actions = q after step".
-            env.step_env()
+            for _ in range(args.physics_settle_steps):
+                env.step_env()
             qpos_post = _as_state(env.get_joint_state())
             ee_post = (
                 _as_state(env.get_ee_pose()) if args.action_type == "ee_pose" else None
