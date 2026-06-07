@@ -8,7 +8,7 @@ import os
 from re import M
 from core.my_policy import (
     MyPolicy,
-    resolve_paligemma_tokenizer_path,
+    load_paligemma_tokenizer,
     resolve_pi0_pretrained_path,
 )
 from lerobot.policies.pi0.modeling_pi0 import PI0Config, PI0Policy
@@ -127,12 +127,7 @@ print(f"state_type: {PnPEnv.state_type}")
 policy.to(device)
 
 # 获取分词器路径（保持与训练一致）
-_tokenizer_src, _tokenizer_local = resolve_paligemma_tokenizer_path(
-    allow_hub_download=_allow_hub_tokenizer,
-)
-tokenizer = AutoTokenizer.from_pretrained(
-    _tokenizer_src, local_files_only=_tokenizer_local
-)
+tokenizer = load_paligemma_tokenizer(allow_hub_download=_allow_hub_tokenizer)
 tokenizer.padding_side = "right"
 TOKENIZER_MAX_LENGTH = 48  # 对应你训练脚本中的 cfg.tokenizer_max_length
 

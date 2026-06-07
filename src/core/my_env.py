@@ -174,11 +174,30 @@ class MyEnv:
             "wrist2_joint",
             "wrist3_joint",
         ]
+        self.arm_servo_names = [f"{j}_servo" for j in self.joint_names]
         self.init_viewer()
+        self._default_arm_kp, self._default_arm_kv = self.get_arm_position_gains()
         # Layout/cube sampling uses this generator so libraries (e.g. dataset code)
         # cannot poison global ``numpy.random`` and freeze cube orientation across resets.
         self._layout_rng = np.random.default_rng(seed)
         self.reset(seed=None)
+
+    def get_arm_position_gains(self) -> tuple[float, float]:
+        """Read uniform kp/kv from the first arm position actuator (MuJoCo 3.x)."""
+        aid = mujoco.mj_name2id(
+            self.env.model, mujoco.mjtObj.mjOBJ_ACTUATOR, self.arm_servo_names[0]
+        )
+        kp = float(self.env.model.actuator_gainprm[aid, 0])
+        kv = float(-self.env.model.actuator_biasprm[aid, 2])
+        return kp, kv
+
+    def set_arm_position_gains(self, kp: float, kv: float) -> None:
+        """Override kp/kv on all arm joint position actuators (val / sweep only)."""
+        for servo_name in self.arm_servo_names:
+            aid = mujoco.mj_name2id(self.env.model, mujoco.mjtObj.mjOBJ_ACTUATOR, servo_name)
+            self.env.model.actuator_gainprm[aid, 0] = kp
+            self.env.model.actuator_biasprm[aid, 1] = -kp
+            self.env.model.actuator_biasprm[aid, 2] = -kv
 
     def init_viewer(self):
         """

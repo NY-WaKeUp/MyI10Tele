@@ -51,7 +51,7 @@ from transformers import AutoTokenizer
 
 from core.my_policy import (
     MyPolicy,
-    resolve_paligemma_tokenizer_path,
+    load_paligemma_tokenizer,
     resolve_pi0_pretrained_path,
 )
 
@@ -147,14 +147,7 @@ def _resolve_policy_path(path: str | Path | None) -> str | Path:
 
 
 def _load_local_paligemma_tokenizer() -> AutoTokenizer:
-    tokenizer_src, tokenizer_local = resolve_paligemma_tokenizer_path(
-        allow_hub_download=_allow_hub_tokenizer,
-    )
-    print(f"Tokenizer: {tokenizer_src} (local_files_only={tokenizer_local})")
-    tokenizer = AutoTokenizer.from_pretrained(
-        tokenizer_src,
-        local_files_only=tokenizer_local,
-    )
+    tokenizer = load_paligemma_tokenizer(allow_hub_download=_allow_hub_tokenizer)
     tokenizer.padding_side = "right"
     return tokenizer
 

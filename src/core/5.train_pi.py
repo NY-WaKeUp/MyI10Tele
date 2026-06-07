@@ -9,8 +9,14 @@ References:
 """
 
 import os
+import sys
 from contextlib import nullcontext
 from pathlib import Path
+
+# Allow `python 5.train_pi.py` from src/core without PYTHONPATH=src.
+_SRC = Path(__file__).resolve().parents[1]
+if str(_SRC) not in sys.path:
+    sys.path.insert(0, str(_SRC))
 
 _hf_root = Path.home() / ".cache" / "huggingface"
 os.environ.setdefault("HF_HOME", str(_hf_root))
@@ -23,9 +29,6 @@ os.environ.setdefault("DISPLAY", ":11.0")
 
 import torch
 from tqdm.auto import tqdm
-from transformers import AutoTokenizer
-
-from lerobot.datasets.factory import resolve_delta_timestamps
 from lerobot.datasets.lerobot_dataset import LeRobotDataset, LeRobotDatasetMetadata
 from lerobot.policies.pi0.configuration_pi0 import PI0Config
 from lerobot.policies.pi0.modeling_pi0 import PI0Policy
@@ -33,7 +36,7 @@ from lerobot.policies.pi0.modeling_pi0 import PI0Policy
 from core.my_policy import (
     MyPIPolicy,
     MyPolicy,
-    resolve_paligemma_tokenizer_path,
+    load_paligemma_tokenizer,
     resolve_pi0_pretrained_path,
 )
 
@@ -44,7 +47,7 @@ from core.my_policy import (
 # from lerobot.rl.wandb_utils import get_safe_wandb_artifact_name
 # from huggingface_hub.constants import SAFETENSORS_SINGLE_FILE
 
-MyPolicy.set_visible_cuda_devices("0")
+MyPolicy.set_visible_cuda_devices(os.environ.get("PI0_CUDA_DEVICE", "1"))
 device = torch.device("cuda")
 
 # --- Previous (custom) settings ---
@@ -62,13 +65,13 @@ device = torch.device("cuda")
 
 # --- Official-aligned + VRAM profiles (31GB GPU: do NOT use fast without 40GB+) ---
 #   safe   — ckpt on, batch 15, no compile (you previously ~87% VRAM, stable)
-#   memory — ckpt on, micro_batch 6 × accum 4, autocast (lower peak VRAM)
-#   expert — ckpt on, train_expert_only (less VRAM, faster; slightly different recipe)
+#   memory — smaller activations only (batch 6); Adam still ~25GB if train_expert_only=False
+#   expert — train_expert_only (~578M params, Adam ~5GB); required on 24GB GPU
 #   fast   — compile + no ckpt: needs ~40GB+; OOM on 32GB even at batch 8
-# Override: PI0_TRAIN_PROFILE=memory python 5.train_pi.py
-PI0_TRAIN_PROFILE = os.environ.get("PI0_TRAIN_PROFILE", "safe")
+# 24GB: PI0_TRAIN_PROFILE=expert PI0_CUDA_DEVICE=1 python 5.train_pi.py
+PI0_TRAIN_PROFILE = os.environ.get("PI0_TRAIN_PROFILE", "expert")
 
-TRAINING_STEPS = 100_000
+TRAINING_STEPS = 30_000
 LOG_FREQ = 200
 SAVE_FREQ = 25_000
 
@@ -105,11 +108,14 @@ else:  # safe
     USE_AMP = False
     TRAIN_EXPERT_ONLY = False
 
-DATASET_REPO = "lerobot/aloha_sim_transfer_cube_human"
-DATASET_NAME = "aloha_sim_transfer_cube_human"
-DATASET_ROOT = os.path.expanduser(
-    f"~/openpi-cache/huggingface/lerobot/lerobot/{DATASET_NAME}"
-)
+# DATASET_REPO = "lerobot/aloha_sim_transfer_cube_human"
+DATASET_REPO = "auboI10"
+# DATASET_NAME = "aloha_sim_transfer_cube_human"
+DATASET_NAME = "data_auboI10_qpos_v30_continuous"
+# DATASET_ROOT = os.path.expanduser(
+#     f"~/openpi-cache/huggingface/lerobot/lerobot/{DATASET_NAME}"
+# )
+DATASET_ROOT = os.path.expanduser(f"~/MyI10Tele/{DATASET_NAME}")
 
 PI0_PRETRAINED_DIR: str | None = None
 pretrained_model_id, pi_pretrained_local_only = resolve_pi0_pretrained_path(
@@ -119,9 +125,7 @@ pretrained_model_id, pi_pretrained_local_only = resolve_pi0_pretrained_path(
 SAVE_DIR = f".ckpt/{pretrained_model_id.split('/')[-1]}/{DATASET_NAME}"
 
 dataset_metadata = LeRobotDatasetMetadata(DATASET_REPO, root=DATASET_ROOT)
-input_features, output_features = MyPolicy.input_output_features_from_metadata(
-    dataset_metadata
-)
+input_features, output_features = MyPolicy.pi0_features_from_metadata(dataset_metadata)
 
 print(
     f"Loading PI0 base: {pretrained_model_id} (local_files_only={pi_pretrained_local_only})"
@@ -174,25 +178,28 @@ if USE_AMP:
 policy = PI0Policy.from_pretrained(
     pretrained_model_id,
     config=cfg,
-    dataset_stats=dataset_metadata.stats,
+    dataset_stats=MyPolicy.pi0_dataset_stats(dataset_metadata.stats),
     local_files_only=pi_pretrained_local_only,
 )
 
-delta_timestamps = resolve_delta_timestamps(cfg, dataset_metadata)
+delta_timestamps = MyPolicy.resolve_pi0_delta_timestamps(cfg, dataset_metadata)
 policy.train()
 policy.to(device)
 print(
     f"Model on {device}, trainable params: "
     f"{sum(p.numel() for p in policy.parameters() if p.requires_grad) / 1e6:.1f}M"
 )
+_trainable = sum(p.numel() for p in policy.parameters() if p.requires_grad)
+# Adam fp32 states ≈ 8 bytes × trainable params (exp_avg + exp_avg_sq).
+_adam_gb = _trainable * 8 / 1e9
+if _adam_gb > 8 and not cfg.train_expert_only:
+    raise RuntimeError(
+        f"train_expert_only=False with {_trainable/1e6:.0f}M trainable params needs "
+        f"~{_adam_gb:.0f}GB Adam optimizer state alone; 24GB GPU will OOM at optimizer.step(). "
+        "Use PI0_TRAIN_PROFILE=expert (openpi low_mem style) or a GPU with 40GB+."
+    )
 
-_tokenizer_src, _tokenizer_local = resolve_paligemma_tokenizer_path(
-    allow_hub_download=_allow_hub_tokenizer,
-)
-print(f"Tokenizer: {_tokenizer_src} (local_files_only={_tokenizer_local})")
-tokenizer = AutoTokenizer.from_pretrained(
-    _tokenizer_src, local_files_only=_tokenizer_local
-)
+tokenizer = load_paligemma_tokenizer(allow_hub_download=_allow_hub_tokenizer)
 tokenizer.padding_side = "right"
 pi_lang = MyPIPolicy(tokenizer, cfg.tokenizer_max_length)
 
@@ -239,6 +246,7 @@ optimizer.zero_grad(set_to_none=True)
 while _global_step < TRAINING_STEPS:
     for batch in dataloader:
         batch = MyPolicy.move_batch_to_device(batch, device)
+        batch = MyPolicy.normalize_pi0_batch(batch)
         batch = pi_lang.inject_language_tokens(batch, device)
 
         if COMPILE_PI0_MODEL:
