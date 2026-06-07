@@ -91,9 +91,7 @@ PLACE_TARGET_DECK_SIZE_SCALE_LOW = 0.9
 PLACE_TARGET_DECK_SIZE_SCALE_HIGH = 1.1
 
 # Scene layout stored in LeRobot ``obj_init`` per episode (float32 vector).
-# Legacy (6): cube_xyz + platform_xyz — no cube orientation.
 # Current (10): cube_xyz(3) + cube_quat_wxyz(4) + platform_xyz(3); platform R stays identity.
-SCENE_LAYOUT_DIM_LEGACY = 6
 SCENE_LAYOUT_DIM = 10
 
 # Body-axis directions for cube faces (outward normals along ±x, ±y, ±z in body frame).
@@ -324,7 +322,9 @@ class MyEnv:
         self.gripper_close = True
         self.past_chars = []
 
-    def reset_with_recorded_layout(self, obj_init: np.ndarray, *, seed: int | None = None) -> None:
+    def reset_with_recorded_layout(
+        self, obj_init: np.ndarray, *, seed: int | None = None
+    ) -> None:
         """Reset arm like ``reset()`` but restore scene from recorded ``obj_init`` (no layout RNG)."""
         if seed is not None:
             self._layout_rng = np.random.default_rng(int(seed))
@@ -585,7 +585,9 @@ class MyEnv:
             [j1,j2,j3,j4,j5,j6,gripper]
         """
         qpos = self.env.get_qpos_joints(joint_names=self.joint_names)
-        gripper_openpi = gripper_qpos_to_openpi(float(self.env.get_qpos_joint("rh_r1")[0]))
+        gripper_openpi = gripper_qpos_to_openpi(
+            float(self.env.get_qpos_joint("rh_r1")[0])
+        )
         q = np.concatenate([qpos, [gripper_openpi]], dtype=np.float32)
         # User-facing semantic name: qpos (even though internal config uses "qpos").
         return as_typed(q, type="qpos")
@@ -680,7 +682,9 @@ class MyEnv:
         """
         delta = self.compute_q - self.last_q
         self.last_q = copy.deepcopy(self.compute_q)
-        gripper_openpi = gripper_qpos_to_openpi(float(self.env.get_qpos_joint("rh_r1")[0]))
+        gripper_openpi = gripper_qpos_to_openpi(
+            float(self.env.get_qpos_joint("rh_r1")[0])
+        )
         gripper_cmd = 1.0 if self.gripper_close else 0.0
         gripper_delta = gripper_cmd - gripper_openpi
         return np.concatenate([delta, [gripper_delta]], dtype=np.float32)
@@ -741,14 +745,6 @@ class MyEnv:
     def apply_scene_layout(self, layout: np.ndarray, *, settle: bool = True) -> None:
         """Restore cube (free joint) and place platform (mocap xyz, R=I) from ``obj_init``."""
         layout = np.asarray(layout, dtype=np.float64).reshape(-1)
-        if layout.size == SCENE_LAYOUT_DIM_LEGACY:
-            self.set_obj_pose(layout[:3], layout[3:6], settle=settle)
-            return
-        if layout.size != SCENE_LAYOUT_DIM:
-            raise ValueError(
-                f"obj_init length must be {SCENE_LAYOUT_DIM_LEGACY} or {SCENE_LAYOUT_DIM}, "
-                f"got {layout.size}"
-            )
 
         p_cube = layout[:3]
         q_cube = layout[3:7]
@@ -808,7 +804,9 @@ class MyEnv:
         rpy = r2rpy(R)  # note vla models 最常用，因为省token
         # quat= r2quat(R)
         ee = np.concatenate([p, rpy], dtype=np.float32)
-        gripper_openpi = gripper_qpos_to_openpi(float(self.env.get_qpos_joint("rh_r1")[0]))
+        gripper_openpi = gripper_qpos_to_openpi(
+            float(self.env.get_qpos_joint("rh_r1")[0])
+        )
         ee = np.concatenate([ee, [gripper_openpi]], dtype=np.float32)
         return as_typed(ee, type="ee_pose")
 

@@ -1,6 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+import sys
+from pathlib import Path
+
+# Allow `python 1.replay_dataset.py` from src/core without PYTHONPATH=src.
+_SRC = Path(__file__).resolve().parents[1]
+if str(_SRC) not in sys.path:
+    sys.path.insert(0, str(_SRC))
+
 import os
 import numpy as np
 import matplotlib.pyplot as plt
@@ -9,7 +17,7 @@ from matplotlib.widgets import Slider
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from core.dataset_config import ACTION_LABEL, REPO_NAME, dataset_root
 
-ROOT = dataset_root(interp=True)
+ROOT = dataset_root(interp=False)
 ACTION_DIM_LABELS = (
     ["x", "y", "z", "roll", "pitch", "yaw", "gripper"]
     if ACTION_LABEL == "ee_pose"

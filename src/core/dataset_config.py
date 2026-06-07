@@ -5,7 +5,7 @@ import os
 REPO_NAME = "auboI10"
 # "qpos": post-step joint targets (OpenPI-style).
 # "ee_pose": post-step flange xyz+rpy+gripper (observation.state stays qpos).
-ACTION_LABEL = "qpos"  # or "ee_pose"
+ACTION_LABEL = "ee_pose"  # or "ee_pose" "qpos"
 
 PROJECT_DIR = os.path.expanduser("~/MyI10Tele")
 XML_PATH = os.path.join(PROJECT_DIR, "assets/aubo_i10_inspire/myscene.xml")
@@ -18,13 +18,25 @@ AUBOI10_QPOS_ROOT_V30 = "~/MyI10Tele/data_auboI10_qpos_v30_continuous"
 # obj_init shape (10,): cube_xyz + cube_quat + platform_xyz (see my_env.SCENE_LAYOUT_DIM)
 # Interpolated / densified copy (scripts/densify_lerobot_dataset.py); smoother qpos at 20 Hz.
 AUBOI10_QPOS_ROOT_INTERP = "~/MyI10Tele/data_auboI10_qpos_v21_interp"
-AUBOI10_EEPOSE_ROOT = "~/MyI10Tele/data_auboI10_ee_pose_v21_continuous"
+AUBOI10_EEPOSE_ROOT = "~/MyI10Tele/data_auboI10_ee_pose_v30_continuous_correctobjinit"
+# Paired teleop roots (0.tele.py dual-write; qpos_to_ee_pose_dataset.py default dst).
+AUBOI10_EEPOSE_ROOT_V30 = "~/MyI10Tele/data_auboI10_ee_pose_v30_continuous"
 
 # openpi TrainConfig names (see openpi/src/openpi/training/config.py).
 OPENPI_TRAIN_CONFIG_QPOS = "pi0_auboI10_low_mem_finetune_qpos"
 OPENPI_TRAIN_CONFIG_QPOS_K10 = "pi0_auboI10_low_mem_finetune_qpos_k10"
 OPENPI_TRAIN_CONFIG_EE_POSE = "pi0_auboI10_low_mem_finetune_ee_pose"
 OPENPI_TRAIN_CONFIG_EE_POSE_K10 = "pi0_auboI10_low_mem_finetune_ee_pose_k10"
+
+
+def teleop_qpos_root() -> str:
+    """LeRobot root for qpos actions during teleop (dual-write primary)."""
+    return os.path.expanduser(AUBOI10_QPOS_ROOT_V30)
+
+
+def teleop_ee_pose_root() -> str:
+    """LeRobot root for ee_pose actions during teleop (dual-write derived)."""
+    return os.path.expanduser(AUBOI10_EEPOSE_ROOT_V30)
 
 
 def dataset_root(label: str | None = None, *, interp: bool = False) -> str:
