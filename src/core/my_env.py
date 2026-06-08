@@ -91,7 +91,9 @@ PLACE_TARGET_DECK_SIZE_SCALE_LOW = 0.9
 PLACE_TARGET_DECK_SIZE_SCALE_HIGH = 1.1
 
 # Scene layout stored in LeRobot ``obj_init`` per episode (float32 vector).
+# Legacy (6): cube_xyz + platform_xyz — cube R=I.
 # Current (10): cube_xyz(3) + cube_quat_wxyz(4) + platform_xyz(3); platform R stays identity.
+SCENE_LAYOUT_DIM_LEGACY = 6
 SCENE_LAYOUT_DIM = 10
 
 # Body-axis directions for cube faces (outward normals along ±x, ±y, ±z in body frame).
@@ -198,7 +200,9 @@ class MyEnv:
     def set_arm_position_gains(self, kp: float, kv: float) -> None:
         """Override kp/kv on all arm joint position actuators (val / sweep only)."""
         for servo_name in self.arm_servo_names:
-            aid = mujoco.mj_name2id(self.env.model, mujoco.mjtObj.mjOBJ_ACTUATOR, servo_name)
+            aid = mujoco.mj_name2id(
+                self.env.model, mujoco.mjtObj.mjOBJ_ACTUATOR, servo_name
+            )
             self.env.model.actuator_gainprm[aid, 0] = kp
             self.env.model.actuator_biasprm[aid, 1] = -kp
             self.env.model.actuator_biasprm[aid, 2] = -kv
@@ -387,7 +391,9 @@ class MyEnv:
         R_step = rpy2r(rpy_cur + drpy)
         return self._ik_arm_to_flange(p_step, R_step)
 
-    def _fk_flange_pose_for_arm_q(self, q_arm: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    def _fk_flange_pose_for_arm_q(
+        self, q_arm: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray]:
         """Flange (p, R) at arm joints q_arm; restores sim state after FK."""
         q_arm = np.asarray(q_arm, dtype=np.float64)
         self.env.store_state()
@@ -506,7 +512,8 @@ class MyEnv:
                 self.step_env()
                 ran += 1
                 q = np.asarray(
-                    self.env.get_qpos_joints(joint_names=self.joint_names), dtype=np.float64
+                    self.env.get_qpos_joints(joint_names=self.joint_names),
+                    dtype=np.float64,
                 )
                 err = float(np.linalg.norm(q - target))
                 if err <= tol_rad:
@@ -689,11 +696,8 @@ class MyEnv:
         gripper_delta = gripper_cmd - gripper_openpi
         return np.concatenate([delta, [gripper_delta]], dtype=np.float32)
 
-    def check_success(self):
-        """
-        True when the cube is on the place deck (aligned with mujoco_teleop_env place logic) and gripper is close.
-        Tolerances come from geom place_target_deck sizes in myscene.xml.
-        """
+    def success_criteria(self) -> dict:
+        """Per-flag success breakdown (same logic as teleop save / check_success)."""
         model = self.env.model
         deck_gid = mujoco.mj_name2id(
             model, mujoco.mjtObj.mjOBJ_GEOM, "place_target_deck"
@@ -706,24 +710,46 @@ class MyEnv:
         place_deck_half_z = float(gs[2])
         place_tol_xy = float(0.75 * min(gs[0], gs[1]))
         place_height_eps = float(0.25 * place_deck_half_z)
+        ee_away_thresh = 0.20
+        gripper_open_thresh = 2.8e-2
 
         p_cube = self.env.get_p_body("cube")
         p_platform = self.env.get_p_body("place_target_platform")
-        xy_ok = np.linalg.norm(p_cube[:2] - p_platform[:2]) < place_tol_xy
-        z_ok = p_cube[2] > p_platform[2] + place_deck_half_z - place_height_eps
-        gripper_open = float(self.env.get_qpos_joint("rh_r1")[0]) < 2.8e-6
-        #  close : 0.81454458 open :2.7e-6
-
-        # Check if the end effector has moved up and away from the cube
         p_ee = self.env.get_p_body("i10_inspire_flange_link")
-        ee_away = (p_ee[2] - p_cube[2]) > 0.20  # 10 cm above the cube
-        # print(f"gripper_open: {gripper_open}")
-        # print(f"gripper_qpos: {float(self.env.get_qpos_joint("rh_r1")[0])}")
-        # print(f"gripper_state: {self.gripper_close}")
-        # print(f"xy_ok: {xy_ok}")
-        # print(f"z_ok: {z_ok}")
-        # print(f"ee_away: {ee_away}")
-        return bool(xy_ok and z_ok and gripper_open and ee_away)
+        rh_r1 = float(self.env.get_qpos_joint("rh_r1")[0])
+        xy_dist = float(np.linalg.norm(p_cube[:2] - p_platform[:2]))
+        z_min = float(p_platform[2] + place_deck_half_z - place_height_eps)
+        ee_z_above = float(p_ee[2] - p_cube[2])
+
+        xy_ok = xy_dist < place_tol_xy
+        z_ok = float(p_cube[2]) > z_min
+        gripper_open = rh_r1 < gripper_open_thresh
+        ee_away = ee_z_above > ee_away_thresh
+        return {
+            "success": bool(xy_ok and z_ok and gripper_open and ee_away),
+            "xy_ok": xy_ok,
+            "z_ok": z_ok,
+            "gripper_open": gripper_open,
+            "ee_away": ee_away,
+            "xy_dist_m": xy_dist,
+            "place_tol_xy_m": place_tol_xy,
+            "cube_z_m": float(p_cube[2]),
+            "z_min_m": z_min,
+            "rh_r1": rh_r1,
+            "gripper_open_thresh": gripper_open_thresh,
+            "ee_z_above_cube_m": ee_z_above,
+            "ee_away_thresh_m": ee_away_thresh,
+            "cube_xyz": p_cube.copy(),
+            "platform_xyz": p_platform.copy(),
+            "ee_xyz": p_ee.copy(),
+        }
+
+    def check_success(self):
+        """
+        True when the cube is on the place deck, gripper is physically open,
+        and the EE is above the cube. Tolerances from place_target_deck in myscene.xml.
+        """
+        return self.success_criteria()["success"]
 
     def get_obj_pose(self):
         """
@@ -745,10 +771,19 @@ class MyEnv:
     def apply_scene_layout(self, layout: np.ndarray, *, settle: bool = True) -> None:
         """Restore cube (free joint) and place platform (mocap xyz, R=I) from ``obj_init``."""
         layout = np.asarray(layout, dtype=np.float64).reshape(-1)
-
-        p_cube = layout[:3]
-        q_cube = layout[3:7]
-        p_plat = layout[7:10]
+        if layout.size == SCENE_LAYOUT_DIM_LEGACY:
+            p_cube = layout[:3]
+            p_plat = layout[3:6]
+            q_cube = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
+        elif layout.size >= SCENE_LAYOUT_DIM:
+            p_cube = layout[:3]
+            q_cube = layout[3:7]
+            p_plat = layout[7:10]
+        else:
+            raise ValueError(
+                f"obj_init length {layout.size}, expected {SCENE_LAYOUT_DIM_LEGACY} (legacy) "
+                f"or {SCENE_LAYOUT_DIM}"
+            )
         self.env.set_p_base_body(body_name="cube", p=p_cube)
         self.env.set_R_base_body(body_name="cube", R=quat2r(q_cube))
         self.env.set_p_mocap(mocap_name="place_target_platform", p=p_plat)

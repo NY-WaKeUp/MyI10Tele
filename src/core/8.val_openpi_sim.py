@@ -32,29 +32,19 @@ Prerequisites
 
    Feed policy **exact training tensors** (pixels + state + task) while sim still executes actions::
 
-   PYTHONPATH=src python src/core/8.val_openpi_sim.py \\
-     --action-type qpos --replan-steps 1 \\
-     --action-delta-stride 10 \\
-     --policy-obs-source sim \\
-     --physics-settle-steps 50 \\
-     --trace-dir ./openpi_eval_trace_qpos_k10
-
-   Diagnose closed-loop drift (state from dataset, cameras from sim)::
+   Sim closed-loop success-rate eval (teleop-tick ON by default; writes eval_summary.json)::
 
    PYTHONPATH=src python src/core/8.val_openpi_sim.py \\
-     --action-type qpos --action-delta-stride 10 --replan-steps 1 \\
-     --policy-obs-source state-dataset-image-sim \\
-     --policy-obs-dataset-episode 0 --dataset-init-episode 0 \\
-     --physics-settle-steps 50 \\
-     --trace-dir ./openpi_eval_trace_qpos_hybrid
+     --port 8000 --action-type qpos \\
+     --action-delta-stride 10 --replan-steps 1 \\
+     --policy-obs-source sim --num-episodes 20 \\
+     --trace-dir ./openpi_eval_trace_qpos_sim
 
-   Sim closed-loop: match 0.tele.py post-action physics (one mj_step, not settle 50)::
-
-   PYTHONPATH=src python src/core/8.val_openpi_sim.py \\
-     --action-type qpos --action-delta-stride 10 --replan-steps 1 \\
-     --policy-obs-source sim --dataset-init-episode 0 \\
-     --teleop-tick \\
-     --trace-dir ./openpi_eval_trace_qpos_teleop_tick
+   Sim closed-loop (--policy-obs-source sim): policy sees live sim proprio. If arm
+   drifts off the demo manifold, k10 AbsoluteActions amplify error (positive feedback).
+   Hybrid A (state-dataset-image-sim) isolates proprio as the main failure mode.
+   Fix: finetune with ``pi0_auboI10_low_mem_finetune_qpos_k10_state_noise`` (proprio
+   noise σ=0.04 rad on arm dims during training).
 
    qpos + --action-delta-stride K: chunk[0] is absolute qpos at t+K (after server
    AbsoluteActions). Hold the same setpoint for K ticks (default). Optional
@@ -92,7 +82,7 @@ from pathlib import Path
 
 import numpy as np
 
-from core.dataset_config import AUBOI10_QPOS_ROOT_CONTINUOUS, TASK_NAME, policy_ee_pose_command
+from core.dataset_config import AUBOI10_QPOS_ROOT_V21_CORRECT, TASK_NAME, policy_ee_pose_command
 from core.eval_action_guard import (
     clamp_absolute_ee_action,
     cube_on_table,
@@ -109,6 +99,9 @@ os.environ.setdefault("DISPLAY", ":51.0")
 
 XML_PATH = os.path.expanduser("~/MyI10Tele/assets/aubo_i10_inspire/myscene.xml")
 HZ = 20
+_POLICY_OBS_USES_DATASET = frozenset(
+    {"dataset", "state-dataset-image-sim", "state-sim-image-dataset"}
+)
 
 
 def _tele_observation_frame(env, prompt: str) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, dict]:
@@ -247,17 +240,26 @@ def _apply_obj_init(env, obj_init: np.ndarray) -> None:
 class EpisodeTrace:
     """Per-episode rollout log for debugging policy I/O vs simulator state."""
 
-    def __init__(self, episode_index: int, trace_dir: Path, save_images: bool) -> None:
+    def __init__(
+        self,
+        episode_index: int,
+        trace_dir: Path,
+        save_images: bool,
+        ref_states: np.ndarray | None = None,
+    ) -> None:
         self.episode_index = episode_index
         self.ep_dir = trace_dir / f"episode_{episode_index:03d}"
         self.ep_dir.mkdir(parents=True, exist_ok=True)
         self.save_images = save_images
         self._img_count = 0
+        self.ref_states = ref_states
 
         self.step: list[int] = []
-        # qpos (7D) always available from env.get_joint_state()
+        # qpos_pre/post: policy-tick semantics (pre = fed to policy / logged cmd delta ref)
         self.qpos_pre: list[np.ndarray] = []
         self.qpos_post: list[np.ndarray] = []
+        # measured sim proprio at tick start (always env.get_joint_state())
+        self.sim_qpos_pre: list[np.ndarray] = []
         # ee_pose (7D xyz+rpy+gripper) available when action_type == "ee_pose"
         self.ee_pre: list[np.ndarray] = []
         self.ee_post: list[np.ndarray] = []
@@ -330,6 +332,7 @@ class EpisodeTrace:
         ee_post: np.ndarray | None = None,
         replan: bool,
         infer_ms: float,
+        sim_qpos_pre: np.ndarray | None = None,
     ) -> None:
         action_executed = np.asarray(action_executed, dtype=np.float32)
         qpos_pre = np.asarray(qpos_pre, dtype=np.float32)
@@ -348,6 +351,8 @@ class EpisodeTrace:
         self.step.append(int(step_idx))
         self.qpos_pre.append(qpos_pre)
         self.qpos_post.append(qpos_post)
+        if sim_qpos_pre is not None:
+            self.sim_qpos_pre.append(np.asarray(sim_qpos_pre, dtype=np.float32))
         if ee_pre is not None:
             self.ee_pre.append(np.asarray(ee_pre, dtype=np.float32))
         if ee_post is not None:
@@ -427,6 +432,11 @@ class EpisodeTrace:
                 if self.ee_post
                 else np.zeros((0, 7), dtype=np.float32)
             ),
+            sim_qpos_pre=(
+                np.stack(self.sim_qpos_pre)
+                if self.sim_qpos_pre
+                else np.zeros((0, 7), dtype=np.float32)
+            ),
             action_executed=actions,
             arm_delta_cmd=arm_delta,
             arm_track_err=arm_track_err,
@@ -493,6 +503,15 @@ class EpisodeTrace:
             summary["ee_xyz_near_zero_frac"] = float((ee_xyz_cmd_norm < 0.005).mean())
         if ee_motion_norm is not None and len(ee_motion_norm):
             summary["ee_motion_norm_mean"] = float(ee_motion_norm.mean())
+        if self.ref_states is not None and self.sim_qpos_pre:
+            sim = np.stack(self.sim_qpos_pre)
+            ref = self.ref_states[: len(sim)]
+            drift = np.linalg.norm(sim[:, :6] - ref[:, :6], axis=1)
+            summary["sim_state_drift_mean"] = float(drift.mean())
+            summary["sim_state_drift_max"] = float(drift.max())
+            for thresh in (0.02, 0.05, 0.10):
+                key = f"sim_state_drift_first_over_{int(thresh * 100):03d}"
+                summary[key] = int(np.argmax(drift > thresh)) if np.any(drift > thresh) else -1
         with open(self.ep_dir / "summary.json", "w", encoding="utf-8") as f:
             json.dump(summary, f, indent=2)
         return summary
@@ -520,6 +539,15 @@ def analyze_trace_dir(trace_dir: Path) -> None:
         "  arm_track_err_mean (avg):",
         np.mean([r["arm_track_err_mean"] for r in rows]),
     )
+    if any("sim_state_drift_mean" in r for r in rows):
+        print(
+            "  sim_state_drift_mean (avg):",
+            np.mean([r.get("sim_state_drift_mean", 0.0) for r in rows]),
+        )
+        print(
+            "  sim_state_drift_first_over_002 (avg step):",
+            np.mean([r.get("sim_state_drift_first_over_002", -1) for r in rows]),
+        )
     if any("ee_xyz_cmd_norm_mean" in r for r in rows):
         print(
             "  ee_xyz_cmd_norm_mean (avg):",
@@ -530,6 +558,7 @@ def analyze_trace_dir(trace_dir: Path) -> None:
             np.mean([r.get("ee_motion_norm_mean", 0.0) for r in rows]),
         )
     print("  successes:", sum(r["success"] for r in rows), "/", len(rows))
+    _print_failure_breakdown(rows)
     print("\nPer-episode:")
     for r in rows:
         extra = ""
@@ -538,11 +567,14 @@ def analyze_trace_dir(trace_dir: Path) -> None:
                 f" xyz_cmd={r['ee_xyz_cmd_norm_mean']:.5f}"
                 f" ee_motion={r.get('ee_motion_norm_mean', 0.0):.5f}"
             )
+        outcome = r.get("outcome", "success" if r["success"] else "?")
+        failed = r.get("failed_criteria", [])
+        fail_msg = "" if r["success"] else f" outcome={outcome} fail={failed}"
         print(
             f"  ep {r['episode_index']:03d}: steps={r['num_steps']} "
             f"cmd_norm={r['arm_cmd_norm_mean']:.5f} near_zero={r['arm_cmd_near_zero_frac']:.2%} "
             f"track_err={r['arm_track_err_mean']:.5f}{extra} "
-            f"grip_toggles={r['gripper_toggles']} ok={r['success']}"
+            f"grip_toggles={r['gripper_toggles']} ok={r['success']}{fail_msg}"
         )
 
 
@@ -580,7 +612,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--seed", type=int, default=42, help="MyEnv RNG seed")
     parser.add_argument(
-        "--num-episodes", type=int, default=20, help="Number of evaluation rollouts"
+        "--num-episodes", type=int, default=10, help="Number of evaluation rollouts"
     )
     parser.add_argument(
         "--max-steps", type=int, default=600, help="Max control steps per episode"
@@ -590,15 +622,17 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=50,
         metavar="N",
-        help="Fixed mj_step count after each step(action). Default 50 for GT replay tracking. "
-        "Use --teleop-tick for policy closed-loop (one mj_step, matches 0.tele.py). "
+        help="Fixed mj_step count after each step(action) on GT replay path. "
+        "Policy eval uses --teleop-tick (default) instead. "
         "Ignored when --physics-settle-tol is set.",
     )
     parser.add_argument(
         "--teleop-tick",
-        action="store_true",
-        help="After step(action), run exactly one env.step_env() (0.tele.py L143-144). "
-        "Matches dataset action=post_q after one physics step; overrides multi-step settle.",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Policy eval default ON: one mj_step after step(action) (0.tele.py L143-144). "
+        "Matches dataset state/action timing. GT replay ignores this (uses --physics-settle-steps). "
+        "Use --no-teleop-tick only for ablation.",
     )
     parser.add_argument(
         "--physics-settle-tol",
@@ -687,7 +721,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--lerobot-root",
         type=str,
-        default=AUBOI10_QPOS_ROOT_CONTINUOUS,
+        default=AUBOI10_QPOS_ROOT_V21_CORRECT,
         help="LeRobot root for GT replay / --dataset-init-episode",
     )
     parser.add_argument(
@@ -701,9 +735,13 @@ def parse_args() -> argparse.Namespace:
         "--policy-obs-source",
         type=str,
         default="sim",
-        choices=("sim", "dataset", "state-dataset-image-sim"),
-        help="sim: live sim image+state; dataset: LeRobot frames; "
-        "state-dataset-image-sim: GT state + sim cameras (drift diagnostic)",
+        choices=(
+            "sim",
+            "dataset",
+            "state-dataset-image-sim",
+            "state-sim-image-dataset",
+        ),
+        help="sim / dataset (both modalities same source); hybrid: cross GT vs sim for drift A/B",
     )
     parser.add_argument(
         "--policy-obs-dataset-episode",
@@ -841,6 +879,134 @@ def _physics_settle(env, args: argparse.Namespace) -> tuple[int, float]:
     return env.settle_physics(steps=int(args.physics_settle_steps))
 
 
+def _physics_settle_gt(env, args: argparse.Namespace) -> tuple[int, float]:
+    """GT replay: multi-step settle so actuators track recorded absolute qpos."""
+    if args.physics_settle_tol is not None:
+        return env.settle_physics(
+            tol_rad=float(args.physics_settle_tol),
+            max_steps=int(args.physics_settle_max_steps),
+        )
+    return env.settle_physics(steps=int(args.physics_settle_steps))
+
+
+def _serialize_success_criteria(c: dict) -> dict:
+    return {
+        "success": bool(c["success"]),
+        "xy_ok": bool(c["xy_ok"]),
+        "z_ok": bool(c["z_ok"]),
+        "gripper_open": bool(c["gripper_open"]),
+        "ee_away": bool(c["ee_away"]),
+        "xy_dist_m": float(c["xy_dist_m"]),
+        "place_tol_xy_m": float(c["place_tol_xy_m"]),
+        "cube_z_m": float(c["cube_z_m"]),
+        "z_min_m": float(c["z_min_m"]),
+        "rh_r1": float(c["rh_r1"]),
+        "gripper_open_thresh": float(c["gripper_open_thresh"]),
+        "ee_z_above_cube_m": float(c["ee_z_above_cube_m"]),
+        "ee_away_thresh_m": float(c["ee_away_thresh_m"]),
+        "cube_xyz": np.asarray(c["cube_xyz"], dtype=np.float64).tolist(),
+        "platform_xyz": np.asarray(c["platform_xyz"], dtype=np.float64).tolist(),
+        "ee_xyz": np.asarray(c["ee_xyz"], dtype=np.float64).tolist(),
+    }
+
+
+def _episode_outcome(
+    env,
+    *,
+    success: bool,
+    num_steps: int,
+    max_steps: int,
+    cube_left_table: bool,
+) -> dict:
+    """Structured end-of-episode outcome for success-rate statistics."""
+    c = env.success_criteria()
+    failed: list[str] = []
+    if not c["xy_ok"]:
+        failed.append("xy_off_platform")
+    if not c["z_ok"]:
+        failed.append("cube_below_deck")
+    if not c["gripper_open"]:
+        failed.append("gripper_not_open")
+    if not c["ee_away"]:
+        failed.append("ee_too_close_to_cube")
+
+    timeout = not success and num_steps >= max_steps
+    if success:
+        primary = "success"
+    elif timeout:
+        primary = "timeout:" + (failed[0] if failed else "criteria_unmet")
+    elif failed:
+        primary = failed[0]
+    else:
+        primary = "unknown"
+
+    return {
+        "outcome": primary,
+        "failed_criteria": failed,
+        "timeout": bool(timeout),
+        "cube_left_table": bool(cube_left_table),
+        "end_criteria": _serialize_success_criteria(c),
+    }
+
+
+def _aggregate_failure_stats(episodes: list[dict]) -> dict:
+    stats: dict[str, int] = {"success": 0, "timeout": 0, "cube_left_table": 0}
+    for ep in episodes:
+        if ep.get("success"):
+            stats["success"] += 1
+        if ep.get("timeout"):
+            stats["timeout"] += 1
+        if ep.get("cube_left_table"):
+            stats["cube_left_table"] += 1
+        if not ep.get("success"):
+            for key in ep.get("failed_criteria", []):
+                stats[key] = stats.get(key, 0) + 1
+    return stats
+
+
+def _print_failure_breakdown(episodes: list[dict]) -> None:
+    stats = _aggregate_failure_stats(episodes)
+    n = len(episodes)
+    if n == 0:
+        return
+    labels = {
+        "success": "成功",
+        "timeout": "超时(max_steps)",
+        "cube_left_table": "方块离桌(过程中)",
+        "xy_off_platform": "方块XY未进平台",
+        "cube_below_deck": "方块高度不足",
+        "gripper_not_open": "夹爪未张开",
+        "ee_too_close_to_cube": "EE离方块太近",
+    }
+    print("\n失败原因统计 (end-of-episode criteria, 可多重叠加):")
+    for key, label in labels.items():
+        if key in stats and stats[key] > 0:
+            print(f"  {label}: {stats[key]}/{n}")
+
+
+def _print_success_criteria(env, *, label: str = "end") -> None:
+    """Print teleop save criteria breakdown (xy / z / gripper / ee_away)."""
+    c = env.success_criteria()
+    flags = (
+        ("xy_ok", c["xy_ok"]),
+        ("z_ok", c["z_ok"]),
+        ("gripper_open", c["gripper_open"]),
+        ("ee_away", c["ee_away"]),
+    )
+    failed = [name for name, ok in flags if not ok]
+    print(f"  success criteria ({label}): " + " ".join(f"{n}={v}" for n, v in flags))
+    if failed:
+        print(f"    failed: {', '.join(failed)}")
+    print(
+        f"    xy_dist={c['xy_dist_m']:.4f}m tol={c['place_tol_xy_m']:.4f}m "
+        f"cube_z={c['cube_z_m']:.4f}m z_min={c['z_min_m']:.4f}m"
+    )
+    print(
+        f"    rh_r1={c['rh_r1']:.2e} (open<{c['gripper_open_thresh']:.1e}) "
+        f"ee_above_cube={c['ee_z_above_cube_m']:.4f}m (need>{c['ee_away_thresh_m']:.2f}m)"
+    )
+
+
 def run_gt_replay(args: argparse.Namespace, trace_dir: Path | None) -> None:
     """Execute dataset GT actions in MuJoCo (diagnose sim execution vs policy)."""
     from core.my_env import MyEnv
@@ -919,7 +1085,7 @@ def run_gt_replay(args: argparse.Namespace, trace_dir: Path | None) -> None:
         cmd_norms.append(float(np.linalg.norm(action_np[:6] - state_pre[:6])))
 
         env.step(action_np)
-        _physics_settle(env, args)
+        _physics_settle_gt(env, args)
         qpos_post = np.array(env.get_joint_state(), dtype=np.float32)
         track_errs.append(float(np.linalg.norm(action_np[:6] - qpos_post[:6])))
 
@@ -965,6 +1131,7 @@ def run_gt_replay(args: argparse.Namespace, trace_dir: Path | None) -> None:
     track_max = float(np.max(track_errs)) if track_errs else 0.0
     print("-" * 30)
     print(f"GT replay done: steps={step} success={episode_success}")
+    _print_success_criteria(env, label="after last frame")
     print(f"  |action-state_pre| arm mean={cmd_mean:.6f} (dataset label scale)")
     print(f"  |action-qpos_post| arm mean={track_mean:.6f} max={track_max:.6f}")
     if track_mean > 0.01:
@@ -1051,6 +1218,7 @@ def main() -> None:
 
     successful_episodes = 0
     all_summaries: list[dict] = []
+    episode_outcomes: list[dict] = []
     print(
         f"Starting evaluation: {args.num_episodes} episodes, "
         f"replan_steps={args.replan_steps}, action_delta_stride={args.action_delta_stride}, "
@@ -1064,7 +1232,7 @@ def main() -> None:
         )
 
     dataset_obs: _DatasetPolicyObsStream | None = None
-    if args.policy_obs_source in ("dataset", "state-dataset-image-sim"):
+    if args.policy_obs_source in _POLICY_OBS_USES_DATASET:
         obs_ep = int(args.policy_obs_dataset_episode)
         if args.dataset_init_episode is None:
             args.dataset_init_episode = obs_ep
@@ -1078,10 +1246,26 @@ def main() -> None:
                 f"Policy observations from LeRobot ep {dataset_obs.episode_id} "
                 f"({len(dataset_obs)} frames) — same tensors as training dataloader repack"
             )
+        elif args.policy_obs_source == "state-dataset-image-sim":
+            print(
+                f"Policy obs hybrid A: state←LeRobot ep {dataset_obs.episode_id}, "
+                f"image←sim ({len(dataset_obs)} frames)"
+            )
         else:
             print(
-                f"Policy obs hybrid: state from LeRobot ep {dataset_obs.episode_id}, "
-                f"images from sim ({len(dataset_obs)} frames)"
+                f"Policy obs hybrid B: state←sim, image←LeRobot ep {dataset_obs.episode_id} "
+                f"({len(dataset_obs)} frames)"
+            )
+
+    ref_states: np.ndarray | None = None
+    if args.dataset_init_episode is not None:
+        ref_states, _, _ = _load_gt_episode(
+            args.lerobot_root, int(args.dataset_init_episode)
+        )
+        if args.policy_obs_source == "sim":
+            print(
+                f"Sim closed-loop ref: demo ep {args.dataset_init_episode} "
+                f"({len(ref_states)} frames) — log sim-vs-demo drift every 10 steps"
             )
 
     for episode in range(args.num_episodes):
@@ -1107,7 +1291,12 @@ def main() -> None:
             args.trace_episodes == 0 or episode < args.trace_episodes
         )
         trace = (
-            EpisodeTrace(episode, trace_dir, save_images=args.trace_save_images)
+            EpisodeTrace(
+                episode,
+                trace_dir,
+                save_images=args.trace_save_images,
+                ref_states=ref_states,
+            )
             if do_trace
             else None
         )
@@ -1117,6 +1306,21 @@ def main() -> None:
             env.step_env()
             if not env.env.loop_every(HZ=HZ):
                 continue
+
+            sim_qpos_pre = np.array(env.get_joint_state(), dtype=np.float32)
+            if (
+                args.policy_obs_source == "sim"
+                and ref_states is not None
+                and step < len(ref_states)
+                and step % 10 == 0
+            ):
+                drift = float(
+                    np.linalg.norm(sim_qpos_pre[:6] - ref_states[step, :6])
+                )
+                print(
+                    f"[ep {episode + 1} step {step}] sim-vs-demo drift={drift:.4f} rad",
+                    flush=True,
+                )
 
             if args.policy_obs_source == "dataset":
                 if step >= len(dataset_obs):
@@ -1147,6 +1351,25 @@ def main() -> None:
                     "observation/image": agent_img,
                     "observation/wrist_image": wrist_img,
                     "observation/state": state_pre,
+                    "prompt": args.prompt,
+                }
+            elif args.policy_obs_source == "state-sim-image-dataset":
+                if step >= len(dataset_obs):
+                    print(
+                        f"Episode {episode + 1}: dataset obs exhausted at step {step} "
+                        f"(len={len(dataset_obs)})"
+                    )
+                    break
+                state_pre, _, _, agent_raw, wrist_raw, sim_element = (
+                    _tele_observation_frame(env, args.prompt)
+                )
+                ds_element = dataset_obs.obs_at(step, args.prompt)
+                agent_img = ds_element["observation/image"]
+                wrist_img = ds_element["observation/wrist_image"]
+                element = {
+                    "observation/image": agent_img,
+                    "observation/wrist_image": wrist_img,
+                    "observation/state": sim_element["observation/state"],
                     "prompt": args.prompt,
                 }
             else:
@@ -1265,6 +1488,7 @@ def main() -> None:
                     ee_post=ee_post,
                     replan=replan,
                     infer_ms=infer_ms,
+                    sim_qpos_pre=sim_qpos_pre,
                 )
 
             env.render(teleop=args.teleop_render)
@@ -1292,10 +1516,23 @@ def main() -> None:
 
         video_recorder.stop(success=episode_success)
 
+        outcome = _episode_outcome(
+            env,
+            success=episode_success,
+            num_steps=step,
+            max_steps=args.max_steps,
+            cube_left_table=cube_fell_logged,
+        )
+
         if trace is not None:
             summary = trace.finalize(
                 episode_success, step, action_type=args.action_type
             )
+            summary.update(outcome)
+            with open(
+                trace.ep_dir / "summary.json", "w", encoding="utf-8"
+            ) as f:
+                json.dump(summary, f, indent=2)
             all_summaries.append(summary)
             msg = (
                 f"  trace ep {episode + 1}: cmd_norm={summary['arm_cmd_norm_mean']:.6f} "
@@ -1307,10 +1544,31 @@ def main() -> None:
                     f" xyz_cmd={summary['ee_xyz_cmd_norm_mean']:.6f} "
                     f"ee_motion={summary['ee_motion_norm_mean']:.6f}"
                 )
+            if "sim_state_drift_mean" in summary:
+                msg += f" sim_drift={summary['sim_state_drift_mean']:.4f}"
+            if not episode_success:
+                msg += f" outcome={outcome['outcome']} failed={outcome['failed_criteria']}"
             print(msg)
+        else:
+            summary = {
+                "episode_index": episode,
+                "success": episode_success,
+                "num_steps": step,
+                **outcome,
+            }
+
+        episode_outcomes.append(
+            {
+                "episode_index": episode,
+                "success": episode_success,
+                "num_steps": step,
+                **outcome,
+            }
+        )
 
         if not episode_success and env.env.is_viewer_alive():
-            print(f"Episode {episode + 1}: failure (max steps {args.max_steps})")
+            print(f"Episode {episode + 1}: failure — {outcome['outcome']}")
+            _print_success_criteria(env, label=f"ep {episode + 1} end")
 
         if not env.env.is_viewer_alive():
             print("Viewer closed; stopping evaluation.")
@@ -1325,11 +1583,38 @@ def main() -> None:
         with open(trace_dir / "all_episodes_summary.json", "w", encoding="utf-8") as f:
             json.dump(all_summaries, f, indent=2)
 
+    eval_summary = {
+        "num_episodes": total_evaluated,
+        "successes": successful_episodes,
+        "success_rate_pct": success_rate,
+        "failure_stats": _aggregate_failure_stats(episode_outcomes),
+        "episodes": episode_outcomes,
+        "action_type": args.action_type,
+        "policy_obs_source": args.policy_obs_source,
+        "action_delta_stride": args.action_delta_stride,
+        "replan_steps": args.replan_steps,
+        "teleop_tick": args.teleop_tick,
+        "physics_settle": _physics_settle_desc(args),
+        "dataset_init_episode": args.dataset_init_episode,
+        "max_steps": args.max_steps,
+        "seed": args.seed,
+    }
+    summary_path = (
+        trace_dir / "eval_summary.json"
+        if trace_dir is not None
+        else Path(args.video_dir) / "eval_summary.json"
+    )
+    summary_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(summary_path, "w", encoding="utf-8") as f:
+        json.dump(eval_summary, f, indent=2)
+
     print("-" * 30)
     print("Evaluation done")
     print(f"Episodes: {total_evaluated}")
     print(f"Successes: {successful_episodes}")
     print(f"Success rate: {success_rate:.2f}%")
+    print(f"Summary JSON: {summary_path}")
+    _print_failure_breakdown(episode_outcomes)
     print(f"Videos: {args.video_dir}")
     if trace_dir is not None:
         print(f"Traces: {trace_dir}")
