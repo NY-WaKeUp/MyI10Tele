@@ -912,9 +912,9 @@ def parse_args() -> argparse.Namespace:
         "--teleop-tick",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="Policy eval default ON: one mj_step after step(action) (0.tele.py L143-144). "
-        "Matches dataset state/action timing. GT replay ignores this (uses --physics-settle-steps). "
-        "Use --no-teleop-tick only for ablation.",
+        help="Default ON: align with 0.tele.py — no extra mj_step after step(action); "
+        "physics advances only via the outer step_env loop. "
+        "Use --no-teleop-tick with --physics-settle-* for ablation / settle semantics.",
     )
     parser.add_argument(
         "--physics-settle-tol",
@@ -1283,7 +1283,7 @@ def _physics_settle_desc(args: argparse.Namespace) -> str:
     if args.post_action_wait_s > 0.0:
         return f"post-action-wait={args.post_action_wait_s}s (sim time)"
     if args.teleop_tick:
-        return "teleop-tick (1 mj_step)"
+        return "0.tele-aligned (0 extra mj_step)"
     if args.physics_settle_tol is not None:
         return (
             f"tol={args.physics_settle_tol} max_steps={args.physics_settle_max_steps}"
@@ -1300,12 +1300,11 @@ def _physics_settle(env, args: argparse.Namespace) -> tuple[int, float]:
         )
         return n, float(np.linalg.norm(q - target))
     if args.teleop_tick:
-        env.step_env()
         target = np.asarray(env.compute_q[:6], dtype=np.float64)
         q = np.asarray(
             env.env.get_qpos_joints(joint_names=env.joint_names), dtype=np.float64
         )
-        return 1, float(np.linalg.norm(q - target))
+        return 0, float(np.linalg.norm(q - target))
     if args.physics_settle_tol is not None:
         return env.settle_physics(
             tol_rad=float(args.physics_settle_tol),
@@ -1821,7 +1820,7 @@ def run_gt_replay(args: argparse.Namespace, trace_dir: Path | None) -> None:
     track_errs: list[float] = []
     cmd_norms: list[float] = []
 
-    # 0.tele.py body per 20Hz tick: step_env → pre_state → grab → act → step_env → render
+    # 0.tele.py: step_env×N → loop_every → check prior success → O_t → step(cmd) → render
     while env.env.is_viewer_alive() and step < n_frames:
         env.step_env()
         if not env.env.loop_every(HZ=HZ):
@@ -1829,6 +1828,26 @@ def run_gt_replay(args: argparse.Namespace, trace_dir: Path | None) -> None:
 
         state_pre = np.array(env.get_joint_state(), dtype=np.float32)
         ee_pre = _as_state(env.get_ee_pose())
+
+        if step > 0:
+            prev_action = _apply_val_gripper_boost(
+                np.asarray(actions[step - 1], dtype=np.float64), args
+            )
+            if args.action_type == "ee_pose":
+                assert ee_pre is not None
+                track_errs.append(
+                    float(np.linalg.norm(_pose_delta_6d(prev_action, ee_pre)))
+                )
+            else:
+                track_errs.append(
+                    float(np.linalg.norm(prev_action[:6] - state_pre[:6]))
+                )
+
+        if env.check_success():
+            print(f"GT replay ep {episode_id}: success in {step} steps")
+            episode_success = True
+            break
+
         agent_raw, wrist_raw = env.grab_image()
         video_recorder.record_frame(agent_raw, wrist_raw)
 
@@ -1845,11 +1864,6 @@ def run_gt_replay(args: argparse.Namespace, trace_dir: Path | None) -> None:
         _physics_settle(env, args)
         qpos_post = np.array(env.get_joint_state(), dtype=np.float32)
         ee_post = _as_state(env.get_ee_pose())
-        if args.action_type == "ee_pose":
-            assert ee_post is not None
-            track_errs.append(float(np.linalg.norm(_pose_delta_6d(action_np, ee_post))))
-        else:
-            track_errs.append(float(np.linalg.norm(action_np[:6] - qpos_post[:6])))
 
         if trace is not None:
             trace.record_step(
@@ -1881,10 +1895,6 @@ def run_gt_replay(args: argparse.Namespace, trace_dir: Path | None) -> None:
                 f"[gt ep {episode_id} step {step}] cube left table: xyz={p_cube.round(4)}",
                 flush=True,
             )
-        if env.check_success():
-            print(f"GT replay ep {episode_id}: success in {step} steps")
-            episode_success = True
-            break
 
     video_recorder.stop(success=episode_success)
 
@@ -1895,11 +1905,17 @@ def run_gt_replay(args: argparse.Namespace, trace_dir: Path | None) -> None:
     print(f"GT replay done: steps={step} success={episode_success}")
     _print_success_criteria(env, label="after last frame")
     if args.action_type == "ee_pose":
-        print(f"  |action-ee_pre| pose L2 mean={cmd_mean:.6f} (dataset label scale)")
-        print(f"  |action-ee_post| pose L2 mean={track_mean:.6f} max={track_max:.6f}")
+        print(f"  |cmd-ee_pre| pose L2 mean={cmd_mean:.6f} (per-step command delta)")
+        print(
+            f"  |prev_cmd-ee_achieved| pose L2 mean={track_mean:.6f} max={track_max:.6f} "
+            "(after 20Hz hold)"
+        )
     else:
-        print(f"  |action-state_pre| arm mean={cmd_mean:.6f} (dataset label scale)")
-        print(f"  |action-qpos_post| arm mean={track_mean:.6f} max={track_max:.6f}")
+        print(f"  |cmd-state_pre| arm mean={cmd_mean:.6f} (per-step command delta)")
+        print(
+            f"  |prev_cmd-q_achieved| arm mean={track_mean:.6f} max={track_max:.6f} "
+            "(after 20Hz hold)"
+        )
     if track_mean > 0.01:
         print(
             "  -> Large tracking error: sim actuation likely not matching recorded targets."
@@ -2138,11 +2154,17 @@ def main() -> None:
             episode_success = False
             cube_fell_logged = False
 
-            # 0.tele.py: step_env → loop_every → obs → (infer) → step → step_env → render
+            # 0.tele.py: step_env×N → loop_every → check prior success → O_t → infer → step → render
             while env.env.is_viewer_alive() and step < args.max_steps:
                 env.step_env()
                 if not env.env.loop_every(HZ=HZ):
                     continue
+
+                if env.check_success():
+                    print(f"Episode {episode + 1}: success in {step} steps")
+                    episode_success = True
+                    successful_episodes += 1
+                    break
 
                 sim_qpos_pre = np.array(env.get_joint_state(), dtype=np.float32)
                 if (
@@ -2389,12 +2411,6 @@ def main() -> None:
                         f"[ep {episode + 1} step {step}] cube left table: xyz={p_cube.round(4)}",
                         flush=True,
                     )
-
-            if env.check_success():
-                print(f"Episode {episode + 1}: success in {step} steps")
-                episode_success = True
-                successful_episodes += 1
-                break
 
         video_recorder.stop(success=episode_success)
 

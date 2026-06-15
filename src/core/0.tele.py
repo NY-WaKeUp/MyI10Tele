@@ -171,11 +171,34 @@ def main() -> None:
     actions = np.zeros(7)
     episode_id = 0
     record_flag = False
-    # 20Hz control tick: step_env (hold) → obs_t → step(Δee) → record (obs_t, cmd_t) → step_env×1 → success?
+    # 20Hz: step_env×N (hold ctrl) → loop_every → check prior success → O_t → step(Δee) → record (O_t,A_t) → render
     while pn_env.env.is_viewer_alive() and episode_id < NUM_DEMO:
         pn_env.step_env()
         if not pn_env.env.loop_every(HZ=HZ):
             continue
+
+        if record_flag and dataset_qpos is not None and dataset_ee is not None:
+            if pn_env.check_success():
+                hold_state = np.array(pn_env.get_joint_state(), dtype=np.float32)
+                hold_ee = np.array(pn_env.get_ee_pose(), dtype=np.float32)
+                term_agent, term_wrist = pn_env.grab_image()
+                term_agent, term_wrist = _resize_cameras(term_agent, term_wrist)
+                _add_record_frame(
+                    pn_env,
+                    dataset_qpos,
+                    dataset_ee,
+                    pre_state=hold_state,
+                    agent_image=term_agent,
+                    wrist_image=term_wrist,
+                    cmd_q=hold_state,
+                    cmd_ee=hold_ee,
+                )
+                _save_episode(dataset_qpos, dataset_ee)
+                print(f"Success! Episode {episode_id} saved.")
+                pn_env.reset()
+                episode_id += 1
+                record_flag = False
+                continue
 
         actions, reset = pn_env.teleop_robot()
         if reset:
@@ -211,30 +234,6 @@ def main() -> None:
                 cmd_q=cmd_q,
                 cmd_ee=cmd_ee,
             )
-
-        pn_env.step_env()
-
-        if record_flag and dataset_qpos is not None and dataset_ee is not None:
-            if pn_env.check_success():
-                hold_state = np.array(pn_env.get_joint_state(), dtype=np.float32)
-                hold_ee = np.array(pn_env.get_ee_pose(), dtype=np.float32)
-                term_agent, term_wrist = pn_env.grab_image()
-                term_agent, term_wrist = _resize_cameras(term_agent, term_wrist)
-                _add_record_frame(
-                    pn_env,
-                    dataset_qpos,
-                    dataset_ee,
-                    pre_state=hold_state,
-                    agent_image=term_agent,
-                    wrist_image=term_wrist,
-                    cmd_q=hold_state,
-                    cmd_ee=hold_ee,
-                )
-                _save_episode(dataset_qpos, dataset_ee)
-                print(f"Success! Episode {episode_id} saved.")
-                pn_env.reset()
-                episode_id += 1
-                record_flag = False
 
         pn_env.render(teleop=True)
 
