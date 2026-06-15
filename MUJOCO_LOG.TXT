@@ -1,3 +1,9 @@
 Fri May 29 21:25:58 2026
 WARNING: mju_openResource: unknown file '/home/ningyu/MyI10Tele/assets/aubo_i10_inspire/myscene.xml'
 
+Sun Jun  7 11:29:20 2026
+WARNING: Nan, Inf or huge value in QACC at DOF 0. The simulation is unstable. Time = 0.0200.
+
+Sun Jun  7 11:29:20 2026
+WARNING: Nan, Inf or huge value in QACC at DOF 0. The simulation is unstable. Time = 0.0200.
+

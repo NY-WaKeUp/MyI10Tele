@@ -91,7 +91,9 @@ PLACE_TARGET_DECK_SIZE_SCALE_LOW = 0.9
 PLACE_TARGET_DECK_SIZE_SCALE_HIGH = 1.1
 
 # Scene layout stored in LeRobot ``obj_init`` per episode (float32 vector).
+# Legacy (6): cube_xyz + platform_xyz — cube R=I.
 # Current (10): cube_xyz(3) + cube_quat_wxyz(4) + platform_xyz(3); platform R stays identity.
+SCENE_LAYOUT_DIM_LEGACY = 6
 SCENE_LAYOUT_DIM = 10
 
 # Body-axis directions for cube faces (outward normals along ±x, ±y, ±z in body frame).
@@ -158,12 +160,18 @@ class MyEnv:
         ik_gain: float = 0.6,
         # ee_pose only: "delta" = keyboard teleop (dpos/drot per step); "absolute" = policy target pose.
         ee_pose_command: str = "delta",
+        # qpos val only: FK(policy joints) -> IK from current q (matches 0.tele.py EE->IK chain).
+        qpos_exec_via_ik: bool = False,
     ) -> None:
         model_path = xml_path
         self.env = MuJoCoParserClass(name="myenv", rel_xml_path=model_path)
         self.action_type = action_type
         self.state_type = state_type
         self.ee_pose_command = ee_pose_command
+        self.qpos_exec_via_ik = bool(qpos_exec_via_ik)
+        # Match 0.tele.py / eval_action_guard per-step EE caps when qpos_exec_via_ik is on.
+        self.qpos_exec_max_xyz_step = 0.005
+        self.qpos_exec_max_rpy_step = 0.08
         self.joint_names = [
             "shoulder_joint",
             "upperArm_joint",
@@ -192,10 +200,49 @@ class MyEnv:
     def set_arm_position_gains(self, kp: float, kv: float) -> None:
         """Override kp/kv on all arm joint position actuators (val / sweep only)."""
         for servo_name in self.arm_servo_names:
-            aid = mujoco.mj_name2id(self.env.model, mujoco.mjtObj.mjOBJ_ACTUATOR, servo_name)
+            aid = mujoco.mj_name2id(
+                self.env.model, mujoco.mjtObj.mjOBJ_ACTUATOR, servo_name
+            )
             self.env.model.actuator_gainprm[aid, 0] = kp
             self.env.model.actuator_biasprm[aid, 1] = -kp
             self.env.model.actuator_biasprm[aid, 2] = -kv
+
+    def get_gripper_position_gain(self) -> float:
+        """Read kp from rh_r1 position actuator."""
+        aid = mujoco.mj_name2id(
+            self.env.model, mujoco.mjtObj.mjOBJ_ACTUATOR, "rh_r1_servo"
+        )
+        return float(self.env.model.actuator_gainprm[aid, 0])
+
+    def get_gripper_position_gains(self) -> tuple[float, float]:
+        """Read kp/kv from rh_r1 position actuator."""
+        aid = mujoco.mj_name2id(
+            self.env.model, mujoco.mjtObj.mjOBJ_ACTUATOR, "rh_r1_servo"
+        )
+        kp = float(self.env.model.actuator_gainprm[aid, 0])
+        kv = float(-self.env.model.actuator_biasprm[aid, 2])
+        return kp, kv
+
+    def set_gripper_position_gain(
+        self,
+        kp: float,
+        *,
+        kv: float | None = None,
+        forcerange: float | None = None,
+    ) -> None:
+        """Override rh_r1 position actuator kp/kv (and optional symmetric force cap)."""
+        aid = mujoco.mj_name2id(
+            self.env.model, mujoco.mjtObj.mjOBJ_ACTUATOR, "rh_r1_servo"
+        )
+        self.env.model.actuator_gainprm[aid, 0] = kp
+        self.env.model.actuator_biasprm[aid, 1] = -kp
+        if kv is not None:
+            self.env.model.actuator_biasprm[aid, 2] = -float(kv)
+        if forcerange is not None:
+            fr = float(forcerange)
+            self.env.model.actuator_forcerange[aid] = np.array(
+                [-fr, fr], dtype=np.float64
+            )
 
     def init_viewer(self):
         """
@@ -337,7 +384,7 @@ class MyEnv:
         )
         self.env.forward(q=q_zero, joint_names=self.joint_names, increase_tick=False)
 
-        self.apply_scene_layout(obj_init, settle=False)
+        self.apply_scene_layout(obj_init, settle=True)
         self.obj_init_pose = np.asarray(obj_init, dtype=np.float32).reshape(-1)
 
         self.last_q = copy.deepcopy(q_zero)
@@ -349,6 +396,66 @@ class MyEnv:
             self.step_env()
         self.gripper_close = True
         print("DONE INITIALIZATION (recorded layout)")
+
+    def set_qpos_exec_via_ik(
+        self,
+        enabled: bool,
+        *,
+        max_xyz_step: float = 0.005,
+        max_rpy_step: float = 0.08,
+    ) -> None:
+        """Val: FK(q_policy) defines EE goal; reach it with capped EE deltas + IK (like 0.tele.py)."""
+        self.qpos_exec_via_ik = bool(enabled)
+        self.qpos_exec_max_xyz_step = float(max_xyz_step)
+        self.qpos_exec_max_rpy_step = float(max_rpy_step)
+
+    def _wrap_pi(self, angles: np.ndarray) -> np.ndarray:
+        return ((np.asarray(angles, dtype=np.float64) + np.pi) % (2 * np.pi)) - np.pi
+
+    def _qpos_via_ee_delta_toward_fk(self, q_target_arm: np.ndarray) -> np.ndarray:
+        """One teleop-scale EE step toward FK(q_policy), then IK from current q."""
+        p_tgt, R_tgt = self._fk_flange_pose_for_arm_q(q_target_arm)
+        p_cur, R_cur = self.env.get_pR_body(body_name="i10_inspire_flange_link")
+        dp = np.asarray(p_tgt - p_cur, dtype=np.float64)
+        dn = float(np.linalg.norm(dp))
+        if dn > self.qpos_exec_max_xyz_step:
+            dp = dp * (self.qpos_exec_max_xyz_step / dn)
+        p_step = p_cur + dp
+        rpy_tgt = r2rpy(R_tgt)
+        rpy_cur = r2rpy(R_cur)
+        drpy = self._wrap_pi(rpy_tgt - rpy_cur)
+        drpy = np.clip(drpy, -self.qpos_exec_max_rpy_step, self.qpos_exec_max_rpy_step)
+        R_step = rpy2r(rpy_cur + drpy)
+        return self._ik_arm_to_flange(p_step, R_step)
+
+    def _fk_flange_pose_for_arm_q(
+        self, q_arm: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Flange (p, R) at arm joints q_arm; restores sim state after FK."""
+        q_arm = np.asarray(q_arm, dtype=np.float64)
+        self.env.store_state()
+        self.env.forward(q=q_arm, joint_names=self.joint_names, increase_tick=False)
+        p_trgt, R_trgt = self.env.get_pR_body(body_name="i10_inspire_flange_link")
+        self.env.restore_state()
+        return p_trgt, R_trgt
+
+    def _ik_arm_to_flange(self, p_trgt: np.ndarray, R_trgt: np.ndarray) -> np.ndarray:
+        q_init = self.env.get_qpos_joints(joint_names=self.joint_names)
+        q, _, _ = solve_ik(
+            env=self.env,
+            joint_names_for_ik=self.joint_names,
+            body_name_trgt="i10_inspire_flange_link",
+            q_init=q_init,
+            p_trgt=np.asarray(p_trgt, dtype=np.float64),
+            R_trgt=np.asarray(R_trgt, dtype=np.float64),
+            max_ik_tick=50,
+            ik_stepsize=1.0,
+            ik_eps=1e-2,
+            ik_th=np.radians(5.0),
+            render=False,
+            verbose_warning=False,
+        )
+        return q
 
     def step(self, action):
         """
@@ -390,7 +497,11 @@ class MyEnv:
         elif self.action_type == "delta_qpos":
             q = action[:-1] + self.last_q
         elif self.action_type == "qpos":
-            q = action[:-1]
+            q_target = np.asarray(action[:-1], dtype=np.float64)
+            if self.qpos_exec_via_ik:
+                q = self._qpos_via_ee_delta_toward_fk(q_target)
+            else:
+                q = q_target
         else:
             raise ValueError("action_type not recognized")
 
@@ -414,6 +525,54 @@ class MyEnv:
 
     def step_env(self):
         self.env.step(self.q)
+
+    def wait_physics(self, seconds: float) -> int:
+        """Advance mj_step with current ctrl held for ``seconds`` of simulation time."""
+        if seconds <= 0.0:
+            raise ValueError(f"seconds must be > 0, got {seconds}")
+        dt = float(self.env.dt)
+        n = max(1, int(round(seconds / dt)))
+        for _ in range(n):
+            self.step_env()
+        return n
+
+    def settle_physics(
+        self,
+        *,
+        steps: int = 1,
+        tol_rad: float | None = None,
+        max_steps: int = 200,
+    ) -> tuple[int, float]:
+        """Run mj_step with the current ctrl target until the arm catches up or budget is spent.
+
+        0.tele.py spins ~int(1/dt/HZ) mj_steps between 20Hz ticks; val used only 1 step after
+        step(action), so position actuators lagged. Call this right after step(action).
+        """
+        if steps < 1:
+            raise ValueError(f"steps must be >= 1, got {steps}")
+        if max_steps < 1:
+            raise ValueError(f"max_steps must be >= 1, got {max_steps}")
+        target = np.asarray(self.compute_q[:6], dtype=np.float64)
+        ran = 0
+        if tol_rad is not None:
+            while ran < max_steps:
+                self.step_env()
+                ran += 1
+                q = np.asarray(
+                    self.env.get_qpos_joints(joint_names=self.joint_names),
+                    dtype=np.float64,
+                )
+                err = float(np.linalg.norm(q - target))
+                if err <= tol_rad:
+                    return ran, err
+        else:
+            for _ in range(steps):
+                self.step_env()
+                ran += 1
+        q = np.asarray(
+            self.env.get_qpos_joints(joint_names=self.joint_names), dtype=np.float64
+        )
+        return ran, float(np.linalg.norm(q - target))
 
     def grab_image(self):
         """
@@ -584,11 +743,8 @@ class MyEnv:
         gripper_delta = gripper_cmd - gripper_openpi
         return np.concatenate([delta, [gripper_delta]], dtype=np.float32)
 
-    def check_success(self):
-        """
-        True when the cube is on the place deck (aligned with mujoco_teleop_env place logic) and gripper is close.
-        Tolerances come from geom place_target_deck sizes in myscene.xml.
-        """
+    def success_criteria(self) -> dict:
+        """Per-flag success breakdown (same logic as teleop save / check_success)."""
         model = self.env.model
         deck_gid = mujoco.mj_name2id(
             model, mujoco.mjtObj.mjOBJ_GEOM, "place_target_deck"
@@ -601,24 +757,46 @@ class MyEnv:
         place_deck_half_z = float(gs[2])
         place_tol_xy = float(0.75 * min(gs[0], gs[1]))
         place_height_eps = float(0.25 * place_deck_half_z)
+        ee_away_thresh = 0.20
+        gripper_open_thresh = 2.8e-2
 
         p_cube = self.env.get_p_body("cube")
         p_platform = self.env.get_p_body("place_target_platform")
-        xy_ok = np.linalg.norm(p_cube[:2] - p_platform[:2]) < place_tol_xy
-        z_ok = p_cube[2] > p_platform[2] + place_deck_half_z - place_height_eps
-        gripper_open = float(self.env.get_qpos_joint("rh_r1")[0]) < 2.8e-6
-        #  close : 0.81454458 open :2.7e-6
-
-        # Check if the end effector has moved up and away from the cube
         p_ee = self.env.get_p_body("i10_inspire_flange_link")
-        ee_away = (p_ee[2] - p_cube[2]) > 0.20  # 10 cm above the cube
-        # print(f"gripper_open: {gripper_open}")
-        # print(f"gripper_qpos: {float(self.env.get_qpos_joint("rh_r1")[0])}")
-        # print(f"gripper_state: {self.gripper_close}")
-        # print(f"xy_ok: {xy_ok}")
-        # print(f"z_ok: {z_ok}")
-        # print(f"ee_away: {ee_away}")
-        return bool(xy_ok and z_ok and gripper_open and ee_away)
+        rh_r1 = float(self.env.get_qpos_joint("rh_r1")[0])
+        xy_dist = float(np.linalg.norm(p_cube[:2] - p_platform[:2]))
+        z_min = float(p_platform[2] + place_deck_half_z - place_height_eps)
+        ee_z_above = float(p_ee[2] - p_cube[2])
+
+        xy_ok = xy_dist < place_tol_xy
+        z_ok = float(p_cube[2]) > z_min
+        gripper_open = rh_r1 < gripper_open_thresh
+        ee_away = ee_z_above > ee_away_thresh
+        return {
+            "success": bool(xy_ok and z_ok and gripper_open and ee_away),
+            "xy_ok": xy_ok,
+            "z_ok": z_ok,
+            "gripper_open": gripper_open,
+            "ee_away": ee_away,
+            "xy_dist_m": xy_dist,
+            "place_tol_xy_m": place_tol_xy,
+            "cube_z_m": float(p_cube[2]),
+            "z_min_m": z_min,
+            "rh_r1": rh_r1,
+            "gripper_open_thresh": gripper_open_thresh,
+            "ee_z_above_cube_m": ee_z_above,
+            "ee_away_thresh_m": ee_away_thresh,
+            "cube_xyz": p_cube.copy(),
+            "platform_xyz": p_platform.copy(),
+            "ee_xyz": p_ee.copy(),
+        }
+
+    def check_success(self):
+        """
+        True when the cube is on the place deck, gripper is physically open,
+        and the EE is above the cube. Tolerances from place_target_deck in myscene.xml.
+        """
+        return self.success_criteria()["success"]
 
     def get_obj_pose(self):
         """
@@ -640,10 +818,19 @@ class MyEnv:
     def apply_scene_layout(self, layout: np.ndarray, *, settle: bool = True) -> None:
         """Restore cube (free joint) and place platform (mocap xyz, R=I) from ``obj_init``."""
         layout = np.asarray(layout, dtype=np.float64).reshape(-1)
-
-        p_cube = layout[:3]
-        q_cube = layout[3:7]
-        p_plat = layout[7:10]
+        if layout.size == SCENE_LAYOUT_DIM_LEGACY:
+            p_cube = layout[:3]
+            p_plat = layout[3:6]
+            q_cube = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
+        elif layout.size >= SCENE_LAYOUT_DIM:
+            p_cube = layout[:3]
+            q_cube = layout[3:7]
+            p_plat = layout[7:10]
+        else:
+            raise ValueError(
+                f"obj_init length {layout.size}, expected {SCENE_LAYOUT_DIM_LEGACY} (legacy) "
+                f"or {SCENE_LAYOUT_DIM}"
+            )
         self.env.set_p_base_body(body_name="cube", p=p_cube)
         self.env.set_R_base_body(body_name="cube", R=quat2r(q_cube))
         self.env.set_p_mocap(mocap_name="place_target_platform", p=p_plat)
@@ -651,7 +838,7 @@ class MyEnv:
         self.env.data.qvel[:] = 0.0
         mujoco.mj_forward(self.env.model, self.env.data)
         if settle:
-            for _ in range(5):
+            for _ in range(20):
                 self.step_env()
 
     def set_obj_pose(self, p_mug, p_plate, *, settle: bool = True) -> None:
@@ -703,6 +890,29 @@ class MyEnv:
             float(self.env.get_qpos_joint("rh_r1")[0])
         )
         ee = np.concatenate([ee, [gripper_openpi]], dtype=np.float32)
+        return as_typed(ee, type="ee_pose")
+
+    def get_commanded_qpos(self) -> np.ndarray:
+        """OpenPI 7D joint target from the last step() (IK arm + gripper command)."""
+        gripper_openpi = 1.0 if self.gripper_close else 0.0
+        q = np.concatenate(
+            [np.asarray(self.compute_q, dtype=np.float32), [gripper_openpi]],
+            dtype=np.float32,
+        )
+        return as_typed(q, type="qpos")
+
+    def get_commanded_ee_pose(self) -> np.ndarray:
+        """OpenPI 7D absolute flange target after the last step() (cumulative p0/R0)."""
+        rpy = r2rpy(self.R0)
+        gripper_openpi = 1.0 if self.gripper_close else 0.0
+        ee = np.concatenate(
+            [
+                np.asarray(self.p0, dtype=np.float32),
+                np.asarray(rpy, dtype=np.float32),
+                [gripper_openpi],
+            ],
+            dtype=np.float32,
+        )
         return as_typed(ee, type="ee_pose")
 
     def get_obs_action(self):

@@ -17,16 +17,25 @@ AUBOI10_QPOS_ROOT = (
 )
 AUBOI10_QPOS_ROOT_CONTINUOUS = "~/MyI10Tele/data_auboI10_qpos_v21_continuous"
 AUBOI10_QPOS_ROOT_V30 = "~/MyI10Tele/data_auboI10_qpos_v30_continuous"
+AUBOI10_QPOS_ROOT_V30_CORRECTOBJINIT = (
+    "~/MyI10Tele/data_auboI10_qpos_v30_continuous_correctobjinit"
+)
+AUBOI10_QPOS_ROOT_V21_CORRECT = (
+    "~/MyI10Tele/data_auboI10_qpos_v21_continuous_correctobjinit"
+)
 # obj_init shape (10,): cube_xyz + cube_quat + platform_xyz (see my_env.SCENE_LAYOUT_DIM)
 # Interpolated / densified copy (scripts/densify_lerobot_dataset.py); smoother qpos at 20 Hz.
 AUBOI10_QPOS_ROOT_INTERP = "~/MyI10Tele/data_auboI10_qpos_v21_interp"
 AUBOI10_EEPOSE_ROOT = "~/MyI10Tele/data_auboI10_ee_pose_v30_continuous_correctobjinit_gripperkp3000force100"
 # Paired teleop roots (0.tele.py dual-write; qpos_to_ee_pose_dataset.py default dst).
 AUBOI10_EEPOSE_ROOT_V30 = "~/MyI10Tele/data_auboI10_ee_pose_v30_continuous"
-
+AUBOI10_TEMP_ROOT = "~/MyI10Tele/temp_data"
 # openpi TrainConfig names (see openpi/src/openpi/training/config.py).
 OPENPI_TRAIN_CONFIG_QPOS = "pi0_auboI10_low_mem_finetune_qpos"
 OPENPI_TRAIN_CONFIG_QPOS_K10 = "pi0_auboI10_low_mem_finetune_qpos_k10"
+OPENPI_TRAIN_CONFIG_QPOS_K10_STATE_NOISE = (
+    "pi0_auboI10_low_mem_finetune_qpos_k10_state_noise"
+)
 OPENPI_TRAIN_CONFIG_EE_POSE = "pi0_auboI10_low_mem_finetune_ee_pose"
 OPENPI_TRAIN_CONFIG_EE_POSE_K10 = "pi0_auboI10_low_mem_finetune_ee_pose_k10"
 
@@ -47,9 +56,11 @@ def dataset_root(label: str | None = None, *, interp: bool = False) -> str:
     if label == "qpos":
         if interp:
             return os.path.expanduser(AUBOI10_QPOS_ROOT_INTERP)
-        return os.path.expanduser(AUBOI10_QPOS_ROOT_CONTINUOUS)
+        return os.path.expanduser(AUBOI10_QPOS_ROOT_V30_CORRECTOBJINIT)
     if label == "ee_pose":
-        return os.path.expanduser(AUBOI10_EEPOSE_ROOT)
+        return os.path.expanduser(AUBOI10_EEPOSE_ROOT_V30_CORRECTOBJINIT)
+    if label == "temp":
+        return os.path.expanduser(AUBOI10_TEMP_ROOT)
     raise ValueError(f"unknown ACTION_LABEL: {label}")
 
 

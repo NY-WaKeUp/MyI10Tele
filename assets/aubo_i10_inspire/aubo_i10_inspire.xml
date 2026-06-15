@@ -18,7 +18,11 @@
     </default>
     <default class="gripper">
       <joint armature="0.1" damping="10.0" axis="-1 0 0"/>
+<<<<<<< HEAD
       <position kp="5000" forcerange="-75 75"/>
+=======
+      <position kp="500" forcerange="-50 50"/>
+>>>>>>> df1fa652e7c1b39d7c336d78bb1a3050f5ae3d07
     </default>
   </default>
   <asset>

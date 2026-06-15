@@ -1,17 +1,27 @@
-# Python-generated files
+# =============================================================================
+# Python
+# =============================================================================
 __pycache__/
-*.py[oc]
+*.py[cod]
+*$py.class
+*.so
+.Python
 build/
 dist/
 wheels/
-*.egg-info
+*.egg-info/
+*.egg
 
-# Virtual environments
+# =============================================================================
+# Dependencies / virtual environments
+# =============================================================================
 .venv/
 venv/
 env/
 
-# Test / type / coverage tooling
+# =============================================================================
+# Test, lint, type-check, coverage
+# =============================================================================
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
@@ -20,47 +30,84 @@ env/
 coverage.xml
 htmlcov/
 .hypothesis/
+.tox/
 
-# Jupyter
+# =============================================================================
+# Notebooks
+# =============================================================================
 .ipynb_checkpoints/
 
-# OS / editor noise
+# =============================================================================
+# OS & editor local history
+# =============================================================================
 .DS_Store
+Thumbs.db
 .history/
 .specstory/
 
-# Secrets / local env (do not commit keys)
+# =============================================================================
+# IDE (local only)
+# =============================================================================
+.vscode/
+.idea/
+.cursorindexingignore
+
+# =============================================================================
+# Secrets / local env
+# =============================================================================
 .env
 .env.*
 
-# Experiment / run logs (optional local noise)
+# =============================================================================
+# Logs
+# =============================================================================
+*.log
+/log
+log/
+MUJOCO_LOG.TXT
+
+# =============================================================================
+# ML experiment tracking
+# =============================================================================
 wandb/
 lightning_logs/
-*.log
 
-# Local checkpoints / exports (large; never commit)
+# =============================================================================
+# LeRobot datasets & teleop dumps (large; keep Git UI responsive)
+# =============================================================================
+data*/
+temp_data/
+
+# =============================================================================
+# Model weights / checkpoints
+# =============================================================================
 **/.ckpt/
 *.safetensors
+pretrained/
 
-# Large generated assets (teleop / dataset dumps — keeps Git UI under VS Code limits)
-data*/
+# =============================================================================
+# openpi sim eval, GT replay, rollout videos (8.val_openpi_sim.py)
+# =============================================================================
+openpi_eval*/
+openpi_gt_replay*/
+episode_videos*/
+episode_videos_openpi/
+
+# =============================================================================
+# Local analysis / scratch outputs
+# =============================================================================
+WORKLOG_*.md
+dataset_action_features_*
+ee_absolute_tracking_smoke.json
+sim_dataset_image_align/
+/~/
+
+# =============================================================================
+# Vendored third-party trees under src/core (not part of this repo)
+# =============================================================================
 src/core/lerobot/
 src/core/openvla-7b/
 src/core/openvla-7b-finetuned-libero-spatial/
 src/core/physical-intelligence/
-
-.vscode
-.cursorindexingignore
-
 src/core/outputs/
 src/core/videos/
-
-episode_videos_openpi/
-
-pretrained/
-
-openpi_eval_trace_v2/
-openpi_eval_trace/
-openpi_eval_trace_v3/
-ee_absolute_tracking_smoke.json
-openpi_eval_trace*

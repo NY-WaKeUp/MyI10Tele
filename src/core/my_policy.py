@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import urllib.parse
 from pathlib import Path
@@ -68,6 +69,45 @@ OPENPI_PI0_BASE_PARAMS = openpi_cached_path(
 OPENPI_PALIGEMMA_TOKENIZER_MODEL = openpi_cached_path(
     "gs://big_vision/paligemma_tokenizer.model"
 )
+
+
+def openpi_repo_root() -> Path:
+    """Local openpi checkout (``OPENPI_ROOT`` or ``~/openpi``)."""
+    return Path(os.environ.get("OPENPI_ROOT", Path.home() / "openpi")).expanduser().resolve()
+
+
+def openpi_norm_stats_path(train_config_name: str, asset_id: str) -> Path:
+    return openpi_repo_root() / "assets" / train_config_name / asset_id / "norm_stats.json"
+
+
+def load_openpi_norm_stats(path: Path) -> dict[str, dict[str, list[float]]]:
+    payload = json.loads(path.read_text())
+    return payload["norm_stats"]
+
+
+def openpi_norm_stats_to_lerobot(
+    norm_stats: dict[str, dict[str, list[float]]],
+) -> dict[str, dict[str, list[float]]]:
+    """Map openpi ``state`` / ``actions`` keys to LeRobot PI0 feature keys."""
+    out: dict[str, dict[str, list[float]]] = {}
+    if "state" in norm_stats:
+        out["observation.state"] = norm_stats["state"]
+    if "actions" in norm_stats:
+        out["action"] = norm_stats["actions"]
+    return out
+
+
+def action_delta_timestamps_sec(
+    fps: float,
+    action_horizon: int,
+    action_delta_stride: int,
+) -> list[float]:
+    """Same formula as ``openpi.training.data_loader.action_delta_timestamps_sec``."""
+    if action_delta_stride <= 1:
+        frame_offsets = list(range(action_horizon))
+    else:
+        frame_offsets = [action_delta_stride * (t + 1) for t in range(action_horizon)]
+    return [offset / fps for offset in frame_offsets]
 
 
 def _newest_snapshot_with_file(
@@ -353,6 +393,46 @@ class MyPolicy:
         if "actions" in batch and ACTION not in batch:
             batch = dict(batch)
             batch[ACTION] = batch.pop("actions")
+        return batch
+
+    @staticmethod
+    def apply_qpos_delta_actions(batch: dict[str, Any]) -> dict[str, Any]:
+        """Match openpi ``DeltaActions(make_bool_mask(6, -1))`` on arm dims only."""
+        batch = MyPolicy.normalize_pi0_batch(batch)
+        state = batch["observation.state"]
+        actions = batch[ACTION]
+        delta = actions.clone()
+        delta[..., :6] = actions[..., :6] - state[..., :6].unsqueeze(-2)
+        batch = dict(batch)
+        batch[ACTION] = delta
+        return batch
+
+    @staticmethod
+    def normalize_pi0_training_batch(
+        batch: dict[str, Any],
+        stats: dict[str, dict[str, list[float] | torch.Tensor]],
+        *,
+        eps: float = 1e-8,
+    ) -> dict[str, Any]:
+        """Mean/std normalize state and action using openpi-computed stats."""
+        batch = dict(batch)
+        for key in ("observation.state", ACTION):
+            if key not in batch or key not in stats:
+                continue
+            mean = torch.as_tensor(
+                stats[key]["mean"], device=batch[key].device, dtype=batch[key].dtype
+            )
+            std = torch.as_tensor(
+                stats[key]["std"], device=batch[key].device, dtype=batch[key].dtype
+            )
+            x = batch[key]
+            if x.ndim == 3:
+                mean = mean.view(1, 1, -1)
+                std = std.view(1, 1, -1)
+            else:
+                mean = mean.view(1, -1)
+                std = std.view(1, -1)
+            batch[key] = (x - mean) / (std + eps)
         return batch
 
 
