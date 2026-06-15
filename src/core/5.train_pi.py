@@ -6,6 +6,14 @@ Default preset mirrors ``pi0_auboI10_low_mem_finetune_qpos_k10`` in
 ``openpi/src/openpi/training/config.py``. Override via ``OPENPI_TRAIN_CONFIG`` env.
 
 LeRobot has no LoRA variants; ``train_expert_only=True`` is the closest low-mem match.
+
+Resume (example for ``data_auboI10_qpos_v30_continuous``)::
+
+    cd src/core
+    export PI0_RESUME=1
+    # optional explicit checkpoint (default: latest under SAVE_DIR)
+    # export PI0_RESUME_CKPT=".ckpt/pi0_auboI10_low_mem_finetune_qpos/data_auboI10_qpos_v30_continuous/checkpoint_042000"
+    CUDA_VISIBLE_DEVICES=1 python 5.train_pi.py
 """
 
 import json
@@ -57,6 +65,98 @@ from core.my_policy import (
     resolve_pi0_pretrained_path,
 )
 
+TRAINING_STATE_FILE = "training_state.pt"
+
+
+def _checkpoint_step(ckpt_dir: Path) -> int:
+    prefix = "checkpoint_"
+    if not ckpt_dir.name.startswith(prefix):
+        raise ValueError(f"Not a step checkpoint directory: {ckpt_dir}")
+    return int(ckpt_dir.name.removeprefix(prefix))
+
+
+def find_step_checkpoints(save_dir: Path) -> list[Path]:
+    if not save_dir.is_dir():
+        return []
+    ckpts = [
+        p for p in save_dir.iterdir() if p.is_dir() and p.name.startswith("checkpoint_")
+    ]
+    return sorted(ckpts, key=_checkpoint_step)
+
+
+def resolve_resume_checkpoint(save_dir: Path) -> Path | None:
+    """Resume from PI0_RESUME_CKPT or latest checkpoint_* when PI0_RESUME=1."""
+    explicit = os.environ.get("PI0_RESUME_CKPT")
+    if explicit:
+        path = Path(explicit).expanduser()
+        if not path.is_absolute():
+            path = (Path(__file__).resolve().parent / path).resolve()
+        else:
+            path = path.resolve()
+        if not path.is_dir():
+            raise FileNotFoundError(f"PI0_RESUME_CKPT not found: {path}")
+        if path.name.startswith("checkpoint_"):
+            return path
+        ckpts = find_step_checkpoints(path)
+        if not ckpts:
+            raise FileNotFoundError(f"No checkpoint_* under PI0_RESUME_CKPT: {path}")
+        return ckpts[-1]
+
+    if os.environ.get("PI0_RESUME", "0") != "1":
+        return None
+
+    ckpts = find_step_checkpoints(save_dir)
+    if not ckpts:
+        return None
+    return ckpts[-1]
+
+
+def find_wandb_run_id(save_dir: Path) -> str | None:
+    wandb_dir = save_dir / "wandb"
+    if not wandb_dir.is_dir():
+        return None
+    runs = sorted(wandb_dir.glob("run-*"))
+    if not runs:
+        return None
+    return runs[-1].name.split("-")[-1]
+
+
+def save_training_state(
+    path: Path,
+    *,
+    global_step: int,
+    accum_step: int,
+    optimizer: torch.optim.Optimizer,
+    scheduler: torch.optim.lr_scheduler.LRScheduler,
+) -> None:
+    torch.save(
+        {
+            "global_step": global_step,
+            "accum_step": accum_step,
+            "optimizer": optimizer.state_dict(),
+            "scheduler": scheduler.state_dict(),
+        },
+        path,
+    )
+
+
+def load_training_state(
+    path: Path,
+    optimizer: torch.optim.Optimizer,
+    scheduler: torch.optim.lr_scheduler.LRScheduler,
+) -> tuple[int, int]:
+    state = torch.load(path, map_location="cpu", weights_only=False)
+    optimizer.load_state_dict(state["optimizer"])
+    scheduler.load_state_dict(state["scheduler"])
+    return int(state["global_step"]), int(state["accum_step"])
+
+
+def fast_forward_scheduler(
+    scheduler: torch.optim.lr_scheduler.LRScheduler, steps: int
+) -> None:
+    for _ in range(steps):
+        scheduler.step()
+
 
 @dataclass(frozen=True)
 class OpenPITrainPreset:
@@ -73,7 +173,7 @@ class OpenPITrainPreset:
     # Aubo: 2 real cameras + 1 padded slot (openpi ``AuboInputs`` right_wrist mask=False).
     empty_cameras: int = 1
     log_interval: int = 100
-    save_interval: int = 1000
+    save_interval: int = 5000
     num_workers: int = os.cpu_count()
     pin_memory: bool = True
     persistent_workers: bool = True
@@ -159,6 +259,11 @@ pretrained_model_id, pi_pretrained_local_only = resolve_pi0_pretrained_path(
     allow_hub_download=_allow_hub,
 )
 SAVE_DIR = f".ckpt/{OPENPI_TRAIN_CONFIG_NAME}/{DATASET_NAME}"
+SAVE_DIR_PATH = Path(SAVE_DIR)
+if not SAVE_DIR_PATH.is_absolute():
+    SAVE_DIR_PATH = (Path(__file__).resolve().parent / SAVE_DIR).resolve()
+
+resume_ckpt_dir = resolve_resume_checkpoint(SAVE_DIR_PATH)
 
 norm_stats_path = openpi_norm_stats_path(OPENPI_TRAIN_CONFIG_NAME, PRESET.asset_id)
 if not norm_stats_path.is_file():
@@ -181,11 +286,22 @@ print(
     f"micro_batch={PRESET.batch_size}  grad_accum={GRAD_ACCUM_STEPS}  "
     f"effective_batch={_effective_batch}  steps={PRESET.num_train_steps}"
 )
-print(
-    f"Loading PI0 base: {pretrained_model_id} (local_files_only={pi_pretrained_local_only})"
-)
+if resume_ckpt_dir is not None:
+    print(
+        f"Resume checkpoint: {resume_ckpt_dir} (step {_checkpoint_step(resume_ckpt_dir)})"
+    )
+    load_model_path = resume_ckpt_dir
+    load_model_local_only = True
+else:
+    print(
+        f"Loading PI0 base: {pretrained_model_id} "
+        f"(local_files_only={pi_pretrained_local_only})"
+    )
+    load_model_path = pretrained_model_id
+    load_model_local_only = pi_pretrained_local_only
 print(f"Norm stats: {norm_stats_path}")
 print(f"Dataset: {DATASET_ROOT}")
+print(f"Save dir: {SAVE_DIR_PATH}")
 
 # torch.compile + gradient_checkpointing + flash-attn breaks at first forward
 # (KeyError: '_scaled_dot_product_flash_attention'). Default: grad_ckpt on, compile off.
@@ -222,10 +338,10 @@ print(
 )
 
 policy = PI0Policy.from_pretrained(
-    pretrained_model_id,
+    str(load_model_path),
     config=cfg,
     dataset_stats=MyPolicy.pi0_dataset_stats(lerobot_stats),
-    local_files_only=pi_pretrained_local_only,
+    local_files_only=load_model_local_only,
 )
 
 action_key = "actions" if "actions" in dataset_metadata.features else ACTION
@@ -276,18 +392,45 @@ scheduler = cfg.get_scheduler_preset().build(
     optimizer, num_training_steps=PRESET.num_train_steps
 )
 
+_global_step = 0
+accum_step = 0
+if resume_ckpt_dir is not None:
+    state_file = resume_ckpt_dir / TRAINING_STATE_FILE
+    if state_file.is_file():
+        _global_step, accum_step = load_training_state(state_file, optimizer, scheduler)
+        print(
+            f"Loaded training state from {state_file}: "
+            f"step={_global_step}, accum_step={accum_step}"
+        )
+    else:
+        _global_step = _checkpoint_step(resume_ckpt_dir)
+        fast_forward_scheduler(scheduler, _global_step)
+        print(
+            f"Legacy checkpoint (no {TRAINING_STATE_FILE}): "
+            f"model weights at step {_global_step}, "
+            "optimizer re-init, LR schedule fast-forwarded"
+        )
+    preset_file = resume_ckpt_dir / "openpi_train_preset.json"
+    if preset_file.is_file():
+        saved_preset = json.loads(preset_file.read_text())
+        if saved_preset.get("dataset_root") != DATASET_ROOT:
+            print(
+                f"Warning: dataset_root mismatch. checkpoint={saved_preset.get('dataset_root')} "
+                f"current={DATASET_ROOT}"
+            )
+
 USE_WANDB = 1
 WANDB_PROJECT = os.environ.get("WANDB_PROJECT", "aubo-i10-fintune")
 WANDB_ENTITY = os.environ.get("WANDB_ENTITY", "phil_ning")
 if USE_WANDB:
-    wandb.init(
-        project=WANDB_PROJECT,
-        entity=WANDB_ENTITY,
-        name=os.environ.get(
+    wandb_init_kwargs: dict = {
+        "project": WANDB_PROJECT,
+        "entity": WANDB_ENTITY,
+        "name": os.environ.get(
             "WANDB_RUN_NAME", f"{OPENPI_TRAIN_CONFIG_NAME}_{DATASET_NAME}"
         ),
-        dir=SAVE_DIR,
-        config={
+        "dir": str(SAVE_DIR_PATH),
+        "config": {
             "openpi_train_config": OPENPI_TRAIN_CONFIG_NAME,
             "asset_id": PRESET.asset_id,
             "action_horizon": PRESET.action_horizon,
@@ -307,20 +450,42 @@ if USE_WANDB:
             "dataset_root": DATASET_ROOT,
             "pretrained_model": pretrained_model_id,
             "norm_stats_path": str(norm_stats_path),
-            "save_dir": SAVE_DIR,
+            "save_dir": str(SAVE_DIR_PATH),
             "trainable_params_m": _trainable / 1e6,
+            "resume_ckpt": str(resume_ckpt_dir) if resume_ckpt_dir else None,
+            "resume_step": _global_step,
         },
-        resume="allow",
-    )
+    }
+    wandb_run_id = os.environ.get("WANDB_RUN_ID")
+    if wandb_run_id:
+        wandb_init_kwargs["id"] = wandb_run_id
+        wandb_init_kwargs["resume"] = "must"
+    elif resume_ckpt_dir is not None:
+        auto_run_id = find_wandb_run_id(SAVE_DIR_PATH)
+        if auto_run_id:
+            wandb_init_kwargs["id"] = auto_run_id
+            wandb_init_kwargs["resume"] = "must"
+    else:
+        wandb_init_kwargs["resume"] = "allow"
+    wandb.init(**wandb_init_kwargs)
     print(f"WandB initialized: {wandb.run.get_url()}")
 else:
     print("WandB disabled (PI0_WANDB=0)")
 
+if _global_step >= PRESET.num_train_steps:
+    print(
+        f"Already at step {_global_step} >= num_train_steps={PRESET.num_train_steps}. "
+        "Nothing to train."
+    )
+    sys.exit(0)
+
 pbar = tqdm(
-    total=PRESET.num_train_steps, desc="Train PI0", dynamic_ncols=True, leave=True
+    total=PRESET.num_train_steps,
+    initial=_global_step,
+    desc="Train PI0",
+    dynamic_ncols=True,
+    leave=True,
 )
-_global_step = 0
-accum_step = 0
 optimizer.zero_grad(set_to_none=True)
 
 while _global_step < PRESET.num_train_steps:
@@ -373,8 +538,15 @@ while _global_step < PRESET.num_train_steps:
             _global_step % PRESET.save_interval == 0
             or _global_step == PRESET.num_train_steps
         ):
-            ckpt_dir = Path(SAVE_DIR) / f"checkpoint_{_global_step:06d}"
+            ckpt_dir = SAVE_DIR_PATH / f"checkpoint_{_global_step:06d}"
             policy.save_pretrained(ckpt_dir)
+            save_training_state(
+                ckpt_dir / TRAINING_STATE_FILE,
+                global_step=_global_step,
+                accum_step=accum_step,
+                optimizer=optimizer,
+                scheduler=scheduler,
+            )
             (ckpt_dir / "openpi_train_preset.json").write_text(
                 json.dumps(
                     {
@@ -402,7 +574,14 @@ while _global_step < PRESET.num_train_steps:
             break
 
 pbar.close()
-policy.save_pretrained(SAVE_DIR)
-print(f"Training complete. Final weights: {SAVE_DIR}")
+policy.save_pretrained(SAVE_DIR_PATH)
+save_training_state(
+    SAVE_DIR_PATH / TRAINING_STATE_FILE,
+    global_step=_global_step,
+    accum_step=accum_step,
+    optimizer=optimizer,
+    scheduler=scheduler,
+)
+print(f"Training complete. Final weights: {SAVE_DIR_PATH}")
 if USE_WANDB:
     wandb.finish()

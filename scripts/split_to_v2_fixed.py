@@ -15,7 +15,6 @@ import json
 import os
 import shutil
 import subprocess
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -332,17 +331,104 @@ def verify_dataset(
     print(f"  OK: {len(episode_rows)} episodes, parquet + {len(cameras)} camera(s)")
 
 
+def write_tasks_jsonl(meta_dir: Path, task_override: str | None = None) -> int:
+    """Write meta/tasks.jsonl from tasks.parquet or info.json fallback."""
+    tasks_parquet = meta_dir / "tasks.parquet"
+    if tasks_parquet.exists():
+        tasks_df = pd.read_parquet(tasks_parquet)
+        with open(meta_dir / "tasks.jsonl", "w", encoding="utf-8") as f:
+            for task, row in tasks_df.iterrows():
+                f.write(
+                    json.dumps(
+                        {"task_index": int(row["task_index"]), "task": str(task)},
+                        ensure_ascii=False,
+                    )
+                    + "\n"
+                )
+        return len(tasks_df)
+    info = json.loads((meta_dir / "info.json").read_text(encoding="utf-8"))
+    task_name = task_override or str(
+        info.get("task") or info.get("default_task") or "Put cube on the black platform"
+    )
+    with open(meta_dir / "tasks.jsonl", "w", encoding="utf-8") as f:
+        f.write(json.dumps({"task_index": 0, "task": task_name}) + "\n")
+    return 1
+
+
+def default_task_name(meta_dir: Path) -> str:
+    tasks_jsonl = meta_dir / "tasks.jsonl"
+    if tasks_jsonl.exists():
+        first = json.loads(tasks_jsonl.read_text(encoding="utf-8").splitlines()[0])
+        return str(first["task"])
+    return "default_task"
+
+
+def write_episodes_jsonl_from_data_parquets(dataset_root: Path, meta_dir: Path) -> int:
+    """LeRobot v2.0: only per-episode data parquet, no meta/episodes/*.parquet."""
+    task_name = default_task_name(meta_dir)
+    data_root = dataset_root / "data"
+    if not data_root.is_dir():
+        raise FileNotFoundError(f"No data/ under {dataset_root}")
+    episode_paths = sorted(data_root.rglob("episode_*.parquet"))
+    if not episode_paths:
+        raise FileNotFoundError(f"No episode_*.parquet under {data_root}")
+
+    records: list[dict] = []
+    for ep_path in episode_paths:
+        stem = ep_path.stem
+        episode_index = int(stem.split("_", 1)[1])
+        df = pd.read_parquet(ep_path, columns=["episode_index"])
+        length = int(len(df))
+        records.append(
+            {
+                "episode_index": episode_index,
+                "tasks": [task_name],
+                "length": length,
+            }
+        )
+    records.sort(key=lambda r: r["episode_index"])
+    with open(meta_dir / "episodes.jsonl", "w", encoding="utf-8") as f:
+        for rec in records:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    return len(records)
+
+
+def write_episodes_jsonl(dataset_root: Path, meta_dir: Path) -> int:
+    ep_dir = meta_dir / "episodes"
+    if ep_dir.is_dir():
+        dfs = [pd.read_parquet(p) for p in sorted(ep_dir.rglob("*.parquet"))]
+        ep = pd.concat(dfs, ignore_index=True)
+    elif (meta_dir / "episodes.parquet").exists():
+        ep = pd.read_parquet(meta_dir / "episodes.parquet")
+    else:
+        return write_episodes_jsonl_from_data_parquets(dataset_root, meta_dir)
+
+    with open(meta_dir / "episodes.jsonl", "w", encoding="utf-8") as f:
+        for _, row in ep.sort_values("episode_index").iterrows():
+            tasks = row["tasks"]
+            if hasattr(tasks, "tolist"):
+                tasks = tasks.tolist()
+            rec = {
+                "episode_index": int(row["episode_index"]),
+                "tasks": tasks,
+                "length": int(row["length"]),
+            }
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    return len(ep)
+
+
 def ensure_meta_jsonl(dataset_root: Path, task: str | None = None) -> None:
     """Ensure meta/tasks.jsonl and meta/episodes.jsonl exist (openpi + v2.1 convert)."""
     meta = dataset_root / "meta"
     if (meta / "episodes.jsonl").is_file() and (meta / "tasks.jsonl").is_file():
         return
-    script = Path(__file__).resolve().parent / "fix_lerobot_meta.py"
-    cmd = [sys.executable, str(script), str(dataset_root)]
-    if task is not None:
-        cmd.extend(["--task", task])
-    print("\n=== Meta jsonl (fix_lerobot_meta) ===")
-    subprocess.run(cmd, check=True)
+    if not (meta / "info.json").exists():
+        raise FileNotFoundError(f"Not a LeRobot dataset: {dataset_root}")
+    print("\n=== Meta jsonl ===")
+    n_tasks = write_tasks_jsonl(meta, task_override=task)
+    n_ep = write_episodes_jsonl(dataset_root, meta)
+    print(f"  Wrote {meta / 'tasks.jsonl'} ({n_tasks} tasks)")
+    print(f"  Wrote {meta / 'episodes.jsonl'} ({n_ep} episodes)")
 
 
 def convert_to_v21(
@@ -400,10 +486,10 @@ def convert_to_v21(
 
 def main(
     src_root: str = os.path.expanduser(
-        "~/MyI10Tele/data_auboI10_ee_pose_v30_continuous_correctobjinit"
+        "~/MyI10Tele/data_auboI10_ee_pose_v30_continuous_correctobjinit_gripperkp3000force100"
     ),
     dst_root: str = os.path.expanduser(
-        "~/MyI10Tele/data_auboI10_ee_pose_v21_continuous_correct_objinit"
+        "~/MyI10Tele/data_auboI10_ee_pose_v21_continuous_correctobjinit_gripperkp3000force100"
     ),
     fps: float = 20.0,
     cameras: list[str] | None = None,

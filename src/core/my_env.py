@@ -207,6 +207,43 @@ class MyEnv:
             self.env.model.actuator_biasprm[aid, 1] = -kp
             self.env.model.actuator_biasprm[aid, 2] = -kv
 
+    def get_gripper_position_gain(self) -> float:
+        """Read kp from rh_r1 position actuator."""
+        aid = mujoco.mj_name2id(
+            self.env.model, mujoco.mjtObj.mjOBJ_ACTUATOR, "rh_r1_servo"
+        )
+        return float(self.env.model.actuator_gainprm[aid, 0])
+
+    def get_gripper_position_gains(self) -> tuple[float, float]:
+        """Read kp/kv from rh_r1 position actuator."""
+        aid = mujoco.mj_name2id(
+            self.env.model, mujoco.mjtObj.mjOBJ_ACTUATOR, "rh_r1_servo"
+        )
+        kp = float(self.env.model.actuator_gainprm[aid, 0])
+        kv = float(-self.env.model.actuator_biasprm[aid, 2])
+        return kp, kv
+
+    def set_gripper_position_gain(
+        self,
+        kp: float,
+        *,
+        kv: float | None = None,
+        forcerange: float | None = None,
+    ) -> None:
+        """Override rh_r1 position actuator kp/kv (and optional symmetric force cap)."""
+        aid = mujoco.mj_name2id(
+            self.env.model, mujoco.mjtObj.mjOBJ_ACTUATOR, "rh_r1_servo"
+        )
+        self.env.model.actuator_gainprm[aid, 0] = kp
+        self.env.model.actuator_biasprm[aid, 1] = -kp
+        if kv is not None:
+            self.env.model.actuator_biasprm[aid, 2] = -float(kv)
+        if forcerange is not None:
+            fr = float(forcerange)
+            self.env.model.actuator_forcerange[aid] = np.array(
+                [-fr, fr], dtype=np.float64
+            )
+
     def init_viewer(self):
         """
         Initialize the viewer
@@ -347,7 +384,7 @@ class MyEnv:
         )
         self.env.forward(q=q_zero, joint_names=self.joint_names, increase_tick=False)
 
-        self.apply_scene_layout(obj_init, settle=False)
+        self.apply_scene_layout(obj_init, settle=True)
         self.obj_init_pose = np.asarray(obj_init, dtype=np.float32).reshape(-1)
 
         self.last_q = copy.deepcopy(q_zero)
@@ -488,6 +525,16 @@ class MyEnv:
 
     def step_env(self):
         self.env.step(self.q)
+
+    def wait_physics(self, seconds: float) -> int:
+        """Advance mj_step with current ctrl held for ``seconds`` of simulation time."""
+        if seconds <= 0.0:
+            raise ValueError(f"seconds must be > 0, got {seconds}")
+        dt = float(self.env.dt)
+        n = max(1, int(round(seconds / dt)))
+        for _ in range(n):
+            self.step_env()
+        return n
 
     def settle_physics(
         self,
@@ -791,7 +838,7 @@ class MyEnv:
         self.env.data.qvel[:] = 0.0
         mujoco.mj_forward(self.env.model, self.env.data)
         if settle:
-            for _ in range(5):
+            for _ in range(20):
                 self.step_env()
 
     def set_obj_pose(self, p_mug, p_plate, *, settle: bool = True) -> None:
@@ -843,6 +890,29 @@ class MyEnv:
             float(self.env.get_qpos_joint("rh_r1")[0])
         )
         ee = np.concatenate([ee, [gripper_openpi]], dtype=np.float32)
+        return as_typed(ee, type="ee_pose")
+
+    def get_commanded_qpos(self) -> np.ndarray:
+        """OpenPI 7D joint target from the last step() (IK arm + gripper command)."""
+        gripper_openpi = 1.0 if self.gripper_close else 0.0
+        q = np.concatenate(
+            [np.asarray(self.compute_q, dtype=np.float32), [gripper_openpi]],
+            dtype=np.float32,
+        )
+        return as_typed(q, type="qpos")
+
+    def get_commanded_ee_pose(self) -> np.ndarray:
+        """OpenPI 7D absolute flange target after the last step() (cumulative p0/R0)."""
+        rpy = r2rpy(self.R0)
+        gripper_openpi = 1.0 if self.gripper_close else 0.0
+        ee = np.concatenate(
+            [
+                np.asarray(self.p0, dtype=np.float32),
+                np.asarray(rpy, dtype=np.float32),
+                [gripper_openpi],
+            ],
+            dtype=np.float32,
+        )
         return as_typed(ee, type="ee_pose")
 
     def get_obs_action(self):
