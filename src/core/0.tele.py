@@ -27,6 +27,8 @@ from lerobot.datasets.lerobot_dataset import LeRobotDataset
 ROOT_QPOS = teleop_qpos_root()
 ROOT_EE = teleop_ee_pose_root()
 NUM_DEMO = 50
+# First collection session uses this layout RNG seed; resume (prompt "n") picks a fresh seed.
+BASE_LAYOUT_SEED = 42
 # Keep loop rate and LeRobot fps identical (pi0 / ACT assume dataset timestamps match this).
 HZ = 20
 # Skip frames where IK barely moved the arm; still log gripper toggles.
@@ -84,17 +86,6 @@ def _create_or_load_dataset(root: str, create_new: bool) -> LeRobotDataset:
 
 
 def main() -> None:
-    # Keyboard teleop uses ee deltas; both qpos and ee_pose action datasets are written.
-    pn_env = MyEnv(
-        XML_PATH,
-        seed=42,
-        action_type="ee_pose",
-        state_type="qpos",
-        ee_pose_command="delta",
-    )
-    print(f"action_type: {pn_env.action_type}")
-    print(f"state_type: {pn_env.state_type}")
-    print(f"ee_pose_command: {pn_env.ee_pose_command}")
     print(f"qpos dataset root: {ROOT_QPOS}")
     print(f"ee_pose dataset root: {ROOT_EE}")
 
@@ -114,9 +105,42 @@ def main() -> None:
 
     dataset_qpos = _create_or_load_dataset(ROOT_QPOS, create_new)
     dataset_ee = _create_or_load_dataset(ROOT_EE, create_new)
+    if not create_new:
+        n_qpos = dataset_qpos.num_episodes
+        n_ee = dataset_ee.num_episodes
+        if n_qpos != n_ee:
+            raise RuntimeError(f"Episode count mismatch: qpos={n_qpos}, ee_pose={n_ee}")
+        episode_id = n_qpos
+        if episode_id >= NUM_DEMO:
+            print(
+                f"Already have {episode_id} episodes (NUM_DEMO={NUM_DEMO}). "
+                "Nothing to collect; choose y to delete and start fresh."
+            )
+            return
+        remaining = NUM_DEMO - episode_id
+        layout_seed = int(np.random.default_rng().integers(0, 2**31 - 1))
+        print(
+            f"Resume: {episode_id}/{NUM_DEMO} episodes done, "
+            f"{remaining} left to collect, layout seed={layout_seed}"
+        )
+    else:
+        episode_id = 0
+        layout_seed = BASE_LAYOUT_SEED
+        print(f"Fresh collection: 0/{NUM_DEMO}, layout seed={layout_seed}")
+
+    # Keyboard teleop uses ee deltas; both qpos and ee_pose action datasets are written.
+    pn_env = MyEnv(
+        XML_PATH,
+        seed=layout_seed,
+        action_type="ee_pose",
+        state_type="qpos",
+        ee_pose_command="delta",
+    )
+    print(f"action_type: {pn_env.action_type}")
+    print(f"state_type: {pn_env.state_type}")
+    print(f"ee_pose_command: {pn_env.ee_pose_command}")
 
     actions = np.zeros(7)
-    episode_id = 0
     record_flag = False
     while pn_env.env.is_viewer_alive() and episode_id < NUM_DEMO:
         pn_env.step_env()
@@ -133,7 +157,11 @@ def main() -> None:
             actions, reset = pn_env.teleop_robot()
             if not record_flag and np.any(actions != 0):
                 record_flag = True
-                print("Start recording")
+                remaining = NUM_DEMO - episode_id
+                print(
+                    f"Start recording episode {episode_id + 1}/{NUM_DEMO}, "
+                    f"{remaining} left to collect"
+                )
             if reset:
                 pn_env.reset()
                 for ds in (dataset_qpos, dataset_ee):

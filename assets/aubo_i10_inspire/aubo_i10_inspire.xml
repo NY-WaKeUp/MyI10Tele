@@ -18,7 +18,7 @@
     </default>
     <default class="gripper">
       <joint armature="0.1" damping="10.0" axis="-1 0 0"/>
-      <position kp="1000" forcerange="-50 50"/>
+      <position kp="5000" forcerange="-75 75"/>
     </default>
   </default>
   <asset>
@@ -193,6 +193,6 @@
     <position name="wrist2_joint_servo" joint="wrist2_joint" class="arm_joint" />
     <position name="wrist3_joint_servo" joint="wrist3_joint" class="arm_joint" />
     <!-- Keep finger actuator as before -->
-    <position name="rh_r1_servo" joint="rh_r1" ctrlrange="0.000 1.100" class="gripper" kp="500" />
+    <position name="rh_r1_servo" joint="rh_r1" ctrlrange="0.000 1.100" class="gripper" />
   </actuator>
 </mujoco>
