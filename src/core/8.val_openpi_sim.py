@@ -22,7 +22,9 @@ Prerequisites
 
    uv pip install -e /home/ningyu/code_before_paper/openpi/packages/openpi-client
 
-3. Run this script from MyI10Tele (MuJoCo / DISPLAY must work):
+3. Run this script from MyI10Tele (MuJoCo / DISPLAY must work). CLI is grouped via tyro
+   (``--help`` shows server / rollout / policy / physics / dataset / trace sections).
+   Flat flags like ``--port 8000`` still work (aliases).
 
    cd /home/ningyu/MyI10Tele
    PYTHONPATH=src python src/core/8.val_openpi_sim.py \\
@@ -85,19 +87,10 @@ Prerequisites
    Re-draw qpos time plots from saved traces::
 
    PYTHONPATH=src python src/core/8.val_openpi_sim.py --trace-dir ./openpi_eval_trace --trace-plot-only
-
-   Sim grasp gap (dataset gripper not as tight as tight pair margin; XML unchanged)::
-
-   PYTHONPATH=src python src/core/8.val_openpi_sim.py \\
-     --action-type qpos --port 8000 \\
-     --val-cube-gripper-margin 0.003 \\
-     --val-gripper-close-boost 0.06 \\
-     --trace-dir ./openpi_eval_trace_grasp_fix
 """
 
 from __future__ import annotations
 
-import argparse
 import collections
 import json
 import os
@@ -122,6 +115,7 @@ from core.openpi_obs import (
     build_openpi_observation_from_sim,
     preprocess_lerobot_image,
 )
+from core.val_openpi_config import EvalArgs, parse_eval_args, physics_settle_tol_on_cli
 
 
 XML_PATH = os.path.expanduser("~/MyI10Tele/assets/aubo_i10_inspire/myscene.xml")
@@ -860,286 +854,6 @@ def analyze_trace_dir(trace_dir: Path) -> None:
         )
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="openpi WebSocket eval on Aubo MyEnv sim"
-    )
-    parser.add_argument(
-        "--host", type=str, default="localhost", help="openpi serve_policy host"
-    )
-    parser.add_argument(
-        "--port", type=int, default=8000, help="openpi serve_policy port"
-    )
-    parser.add_argument(
-        "--replan-steps",
-        type=int,
-        default=1,
-        help="Actions per chunk before re-infer (stride=1 configs only); ignored when --action-delta-stride>1",
-    )
-    parser.add_argument(
-        "--action-delta-stride",
-        type=int,
-        default=1,
-        metavar="K",
-        help="Plan C / k10: re-infer every K sim steps; hold chunk[0] (q_{t+K}) for K ticks. Match train action_delta_stride.",
-    )
-    parser.add_argument(
-        "--prompt",
-        type=str,
-        default=TASK_NAME,
-        help="Language instruction for the policy",
-    )
-    parser.add_argument(
-        "--xml-path", type=str, default=XML_PATH, help="MuJoCo scene XML"
-    )
-    parser.add_argument("--seed", type=int, default=42, help="MyEnv RNG seed")
-    parser.add_argument(
-        "--num-episodes", type=int, default=10, help="Number of evaluation rollouts"
-    )
-    parser.add_argument(
-        "--max-steps", type=int, default=600, help="Max control steps per episode"
-    )
-    parser.add_argument(
-        "--physics-settle-steps",
-        type=int,
-        default=50,
-        metavar="N",
-        help="Fixed mj_step count after each step(action) on GT replay path. "
-        "Policy eval uses --teleop-tick (default) instead. "
-        "Ignored when --physics-settle-tol is set.",
-    )
-    parser.add_argument(
-        "--teleop-tick",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Default ON: align with 0.tele.py — no extra mj_step after step(action); "
-        "physics advances only via the outer step_env loop. "
-        "Use --no-teleop-tick with --physics-settle-* for ablation / settle semantics.",
-    )
-    parser.add_argument(
-        "--physics-settle-tol",
-        type=float,
-        default=0.0005,
-        metavar="RAD",
-        help="Adaptive settle: mj_step until ||q_arm - q_target|| <= RAD (cap: --physics-settle-max-steps)",
-    )
-    parser.add_argument(
-        "--physics-settle-max-steps",
-        type=int,
-        default=1000,
-        metavar="N",
-        help="Max mj_step budget when --physics-settle-tol is set",
-    )
-    parser.add_argument(
-        "--post-action-wait-s",
-        type=float,
-        default=0.0,
-        metavar="SEC",
-        help="Policy eval: after each step(action), hold ctrl and mj_step for SEC simulation "
-        "seconds, then re-observe and re-infer (one action per cycle). 0=use teleop-tick/settle.",
-    )
-    parser.add_argument(
-        "--video-dir",
-        type=str,
-        default=None,
-        help="Rollout videos. Default: <trace-dir>/videos when --trace-dir is set, "
-        "else ./episode_videos_openpi",
-    )
-    parser.add_argument(
-        "--action-type",
-        type=str,
-        default="qpos",
-        choices=("qpos", "ee_pose"),
-        help="qpos: joint targets; ee_pose: absolute flange xyz+rpy+gripper (match train config)",
-    )
-    parser.add_argument(
-        "--trace-dir",
-        type=str,
-        default=None,
-        help="If set, save per-episode npz/json traces (state, actions, chunks)",
-    )
-    parser.add_argument(
-        "--trace-episodes",
-        type=int,
-        default=0,
-        help="Number of episodes to trace (from the start); 0 = trace all",
-    )
-    parser.add_argument(
-        "--trace-analyze-only",
-        action="store_true",
-        help="Print trace summary from --trace-dir and exit",
-    )
-    parser.add_argument(
-        "--trace-plot-only",
-        action="store_true",
-        help="Re-draw qpos plots under <trace-dir>/qpos_time/ from rollout.npz and exit",
-    )
-    parser.add_argument(
-        "--teleop-render",
-        action="store_true",
-        help="Match 0.tele.py viewer overlays (camera panels + key hints)",
-    )
-    parser.add_argument(
-        "--no-ee-guard",
-        action="store_true",
-        help="Disable per-step EE clamp (ee_pose only; default is guard ON)",
-    )
-    parser.add_argument(
-        "--max-ee-xyz-step",
-        type=float,
-        default=0.005,
-        help="Max |Δxyz| per control step when EE guard is on (meters; ~teleop dpos)",
-    )
-    parser.add_argument(
-        "--max-ee-rpy-step",
-        type=float,
-        default=0.08,
-        help="Max |Δrpy| per control step when EE guard is on (radians)",
-    )
-    parser.add_argument(
-        "--log-cube-every",
-        type=int,
-        default=25,
-        help="Print cube xyz every N steps; 0 = only when cube leaves the table",
-    )
-    parser.add_argument(
-        "--replay-gt-episode",
-        type=int,
-        default=None,
-        metavar="EP",
-        help="Open-loop replay recorded actions for this dataset episode (no policy server)",
-    )
-    parser.add_argument(
-        "--lerobot-root",
-        type=str,
-        default=AUBOI10_QPOS_ROOT_V21_CORRECT,
-        help="LeRobot root for GT replay / --dataset-init-episode",
-    )
-    parser.add_argument(
-        "--dataset-init-episode",
-        type=int,
-        default=None,
-        metavar="EP",
-        help="Restore obj_init + frame-0 qpos from this dataset episode each rollout (train/eval layout match)",
-    )
-    parser.add_argument(
-        "--dataset-init-warmup-steps",
-        type=int,
-        default=20,
-        metavar="N",
-        help="After snapping to dataset frame-0 qpos, run N step_env() ticks. "
-        "Default 0 matches recording pre_state timing.",
-    )
-    parser.add_argument(
-        "--policy-obs-source",
-        type=str,
-        default="sim",
-        choices=(
-            "sim",
-            "dataset",
-            "state-dataset-image-sim",
-            "state-sim-image-dataset",
-        ),
-        help="sim / dataset (both modalities same source); hybrid: cross GT vs sim for drift A/B",
-    )
-    parser.add_argument(
-        "--policy-obs-dataset-episode",
-        type=int,
-        default=0,
-        metavar="EP",
-        help="LeRobot episode for --policy-obs-source=dataset (must match --lerobot-root / train data)",
-    )
-    parser.add_argument(
-        "--policy-obs-state-alpha",
-        type=float,
-        default=0.0,
-        metavar="A",
-        help="sim closed-loop only: policy state = (1-A)*sim_qpos + A*demo_qpos[step] "
-        "(needs --dataset-init-episode / ref_states). 0=pure sim, 1=Hybrid A state only.",
-    )
-    parser.add_argument(
-        "--replay-max-frames",
-        type=int,
-        default=None,
-        help="Cap GT replay length (default: full episode)",
-    )
-    parser.add_argument(
-        "--no-replay-dataset-init",
-        action="store_true",
-        help="After reset, do not restore cube/platform from dataset obj_init",
-    )
-    parser.add_argument(
-        "--arm-kp",
-        type=float,
-        default=None,
-        help="Advanced: override XML arm position kp (default: keep aubo_i10_inspire.xml)",
-    )
-    parser.add_argument(
-        "--arm-kv",
-        type=float,
-        default=None,
-        help="Advanced: override XML arm position kv (default: keep aubo_i10_inspire.xml)",
-    )
-    parser.add_argument(
-        "--gripper-kp",
-        type=float,
-        default=None,
-        help="Override rh_r1_servo position kp (default: keep aubo_i10_inspire.xml)",
-    )
-    parser.add_argument(
-        "--gripper-kv",
-        type=float,
-        default=None,
-        help="Override rh_r1_servo position kv (default: keep aubo_i10_inspire.xml)",
-    )
-    parser.add_argument(
-        "--gripper-forcerange",
-        type=float,
-        default=None,
-        help="Symmetric force cap (N) on rh_r1_servo; raise if kp alone cannot close fast (try 300–500)",
-    )
-    parser.add_argument(
-        "--qpos-hold-ramp",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="k10 hold: linear setpoint anchor→chunk[0] by hold index (default: constant chunk[0])",
-    )
-    parser.add_argument(
-        "--qpos-chunk-integrate",
-        action="store_true",
-        help="Requires --qpos-receding-horizon: cmd_arm = sim + (chunk[0]-infer) each step; "
-        "gripper absolute. Ignored when replan_steps>1 per infer.",
-    )
-    parser.add_argument(
-        "--qpos-receding-horizon",
-        action="store_true",
-        help="qpos stride=1: infer every step (chunk[0] only). Pair with --qpos-chunk-integrate for tight closed-loop",
-    )
-    parser.add_argument(
-        "--qpos-exec-via-ik",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="Experimental: capped EE delta toward FK(q_policy) then IK. "
-        "Only with stride=1; incompatible with hold ramp.",
-    )
-    parser.add_argument(
-        "--val-cube-gripper-margin",
-        type=float,
-        default=None,
-        metavar="M",
-        help="Val-only runtime patch: cube↔gripper MuJoCo pair margin (m). "
-        "Does not edit XML. Try 0.0025–0.004 when dataset gripper closure is looser than sim needs.",
-    )
-    parser.add_argument(
-        "--val-gripper-close-boost",
-        type=float,
-        default=0.0,
-        metavar="D",
-        help="Val-only: add D to gripper command when action[6]>0.5 before sim step (e.g. 0.06).",
-    )
-    return parser.parse_args()
-
-
 def _log_xml_arm_gains(env) -> None:
     kp, kv = env.get_arm_position_gains()
     grip_kp, grip_kv = env.get_gripper_position_gains()
@@ -1156,18 +870,6 @@ _GRIPPER_COL_GEOM_NAMES = frozenset(
         "gripper_l2_col",
     }
 )
-
-
-def _apply_val_gripper_boost(
-    action: np.ndarray, args: argparse.Namespace
-) -> np.ndarray:
-    boost = float(args.val_gripper_close_boost)
-    if boost == 0.0:
-        return action
-    out = np.asarray(action, dtype=np.float64).copy()
-    if out[6] > 0.5:
-        out[6] = float(np.clip(out[6] + boost, 0.0, 1.0))
-    return out
 
 
 def _qpos_hold_setpoint(
@@ -1188,7 +890,7 @@ def _qpos_hold_setpoint(
     return q_anchor + alpha * (q_target - q_anchor)
 
 
-def _qpos_chunk_horizon(args: argparse.Namespace, chunk_len: int) -> int:
+def _qpos_chunk_horizon(args: EvalArgs, chunk_len: int) -> int:
     if args.qpos_receding_horizon:
         return 1
     return min(args.replan_steps, chunk_len)
@@ -1222,7 +924,7 @@ def _blend_policy_state(
     return ((1.0 - a) * sim_state + a * ref_state).astype(np.float32)
 
 
-def _apply_eval_runtime_options(args: argparse.Namespace) -> None:
+def _apply_eval_runtime_options(args: EvalArgs) -> None:
     if args.post_action_wait_s > 0.0:
         if args.teleop_tick:
             args.teleop_tick = False
@@ -1237,7 +939,7 @@ def _apply_eval_runtime_options(args: argparse.Namespace) -> None:
             )
         if args.action_delta_stride > 1:
             raise ValueError("--post-action-wait-s requires --action-delta-stride 1")
-    if "--physics-settle-tol" in sys.argv and args.teleop_tick:
+    if physics_settle_tol_on_cli() and args.teleop_tick:
         args.teleop_tick = False
         print(
             "NOTE: --physics-settle-tol on CLI → --no-teleop-tick "
@@ -1255,7 +957,7 @@ def _apply_eval_runtime_options(args: argparse.Namespace) -> None:
         )
 
 
-def _validate_qpos_closed_loop_exec(args: argparse.Namespace) -> None:
+def _validate_qpos_closed_loop_exec(args: EvalArgs) -> None:
     if not (args.qpos_chunk_integrate or args.qpos_receding_horizon):
         return
     if args.action_type != "qpos":
@@ -1279,7 +981,7 @@ def _validate_qpos_closed_loop_exec(args: argparse.Namespace) -> None:
         )
 
 
-def _physics_settle_desc(args: argparse.Namespace) -> str:
+def _physics_settle_desc(args: EvalArgs) -> str:
     if args.post_action_wait_s > 0.0:
         return f"post-action-wait={args.post_action_wait_s}s (sim time)"
     if args.teleop_tick:
@@ -1291,7 +993,7 @@ def _physics_settle_desc(args: argparse.Namespace) -> str:
     return f"steps={args.physics_settle_steps}"
 
 
-def _physics_settle(env, args: argparse.Namespace) -> tuple[int, float]:
+def _physics_settle(env, args: EvalArgs) -> tuple[int, float]:
     if args.post_action_wait_s > 0.0:
         n = env.wait_physics(args.post_action_wait_s)
         target = np.asarray(env.compute_q[:6], dtype=np.float64)
@@ -1331,7 +1033,7 @@ class _PolicyObsPack:
 
 def _build_policy_observation(
     env,
-    args: argparse.Namespace,
+    args: EvalArgs,
     step: int,
     dataset_obs: _DatasetPolicyObsStream | None,
     ref_states: np.ndarray | None,
@@ -1430,7 +1132,7 @@ def _action_from_chunk(
     chunk: np.ndarray,
     infer_state: np.ndarray,
     sim_qpos: np.ndarray,
-    args: argparse.Namespace,
+    args: EvalArgs,
     ee_pre: np.ndarray | None,
     *,
     ee_guard: bool,
@@ -1451,13 +1153,13 @@ def _action_from_chunk(
             max_xyz_step=args.max_ee_xyz_step,
             max_rpy_step=args.max_ee_rpy_step,
         )
-    return _apply_val_gripper_boost(action_np, args)
+    return np.asarray(action_np, dtype=np.float64)
 
 
 def _run_wait_replan_episode(
     env,
     client,
-    args: argparse.Namespace,
+    args: EvalArgs,
     episode: int,
     *,
     dataset_obs: _DatasetPolicyObsStream | None,
@@ -1762,7 +1464,7 @@ def _print_success_criteria(env, *, label: str = "end") -> None:
     )
 
 
-def run_gt_replay(args: argparse.Namespace, trace_dir: Path | None) -> None:
+def run_gt_replay(args: EvalArgs, trace_dir: Path | None) -> None:
     """Execute dataset GT actions in MuJoCo (diagnose sim execution vs policy)."""
     from core.my_env import MyEnv
     from core.videos.episode_video_recorder import EpisodeVideoRecorder
@@ -1790,13 +1492,13 @@ def run_gt_replay(args: argparse.Namespace, trace_dir: Path | None) -> None:
     print(
         f"action_type={env.action_type} ee_pose_command={env.ee_pose_command} "
         f"physics_settle={_physics_settle_desc(args)} "
-        f"dataset_init={not args.no_replay_dataset_init and obj_init is not None}"
+        f"dataset_init={args.replay_dataset_init and obj_init is not None}"
     )
 
     if trace_dir is not None:
         trace_dir.mkdir(parents=True, exist_ok=True)
         with open(trace_dir / "run_config.json", "w", encoding="utf-8") as f:
-            json.dump(vars(args), f, indent=2, default=str)
+            json.dump(args.to_json_dict(), f, indent=2, default=str)
 
     video_recorder = EpisodeVideoRecorder(
         output_dir=args.video_dir,
@@ -1809,7 +1511,7 @@ def run_gt_replay(args: argparse.Namespace, trace_dir: Path | None) -> None:
         seed=args.seed,
         state0=states[0],
         obj_init=obj_init,
-        use_recorded_layout=not args.no_replay_dataset_init,
+        use_recorded_layout=args.replay_dataset_init,
         warmup_steps=int(args.dataset_init_warmup_steps),
     )
 
@@ -1830,9 +1532,7 @@ def run_gt_replay(args: argparse.Namespace, trace_dir: Path | None) -> None:
         ee_pre = _as_state(env.get_ee_pose())
 
         if step > 0:
-            prev_action = _apply_val_gripper_boost(
-                np.asarray(actions[step - 1], dtype=np.float64), args
-            )
+            prev_action = np.asarray(actions[step - 1], dtype=np.float64)
             if args.action_type == "ee_pose":
                 assert ee_pre is not None
                 track_errs.append(
@@ -1851,9 +1551,7 @@ def run_gt_replay(args: argparse.Namespace, trace_dir: Path | None) -> None:
         agent_raw, wrist_raw = env.grab_image()
         video_recorder.record_frame(agent_raw, wrist_raw)
 
-        action_np = _apply_val_gripper_boost(
-            np.asarray(actions[step], dtype=np.float64), args
-        )
+        action_np = np.asarray(actions[step], dtype=np.float64)
         if args.action_type == "ee_pose":
             assert ee_pre is not None
             cmd_norms.append(float(np.linalg.norm(_pose_delta_6d(action_np, ee_pre))))
@@ -1942,7 +1640,7 @@ def run_gt_replay(args: argparse.Namespace, trace_dir: Path | None) -> None:
 
 
 def main() -> None:
-    args = parse_args()
+    args = parse_eval_args()
     trace_dir = Path(args.trace_dir) if args.trace_dir else None
     args.video_dir = str(_resolve_video_dir(trace_dir, args.video_dir))
 
@@ -1998,7 +1696,7 @@ def main() -> None:
         ee_pose_command=ee_cmd,
     )
     _log_xml_arm_gains(env)
-    ee_guard = args.action_type == "ee_pose" and not args.no_ee_guard
+    ee_guard = args.action_type == "ee_pose" and args.ee_guard
     print(
         f"action_type: {env.action_type}, state_type: {env.state_type}, "
         f"ee_pose_command: {env.ee_pose_command}"
@@ -2013,7 +1711,7 @@ def main() -> None:
     if trace_dir is not None:
         trace_dir.mkdir(parents=True, exist_ok=True)
         with open(trace_dir / "run_config.json", "w", encoding="utf-8") as f:
-            json.dump(vars(args), f, indent=2, default=str)
+            json.dump(args.to_json_dict(), f, indent=2, default=str)
         print(f"Tracing enabled -> {trace_dir}")
 
     video_recorder = EpisodeVideoRecorder(
@@ -2373,9 +2071,7 @@ def main() -> None:
                             f"[ep {episode + 1} step {step}] EE guard clipped policy target"
                         )
 
-                action_np = _apply_val_gripper_boost(
-                    np.asarray(action_np, dtype=np.float64), args
-                )
+                action_np = np.asarray(action_np, dtype=np.float64)
                 env.step(action_np)
                 _physics_settle(env, args)
                 qpos_post = _as_state(env.get_joint_state())

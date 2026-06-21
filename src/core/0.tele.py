@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-import argparse
 import sys
 import os
 import shutil
+from dataclasses import dataclass
 from pathlib import Path
+
+import tyro
 
 # Allow `python 0.tele.py` from src/core without PYTHONPATH=src.
 _SRC = Path(__file__).resolve().parents[1]
@@ -119,16 +121,16 @@ def _save_episode(dataset_qpos: LeRobotDataset, dataset_ee: LeRobotDataset) -> N
     dataset_ee.save_episode(parallel_encoding=parallel)
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Keyboard teleop for Aubo + Inspire in MuJoCo"
-    )
-    parser.add_argument(
-        "--no-record",
-        action="store_true",
-        help="Physics / viewer only: do not create or write LeRobot datasets",
-    )
-    return parser.parse_args()
+@dataclass
+class TeleCLI:
+    """Keyboard teleop for Aubo + Inspire in MuJoCo (LeRobot dual-write)."""
+
+    record: bool = True
+    """Write LeRobot datasets (``--no-record`` = viewer-only teleop)."""
+
+
+def parse_args() -> TeleCLI:
+    return tyro.cli(TeleCLI)
 
 
 def main() -> None:
@@ -147,7 +149,7 @@ def main() -> None:
 
     dataset_qpos = None
     dataset_ee = None
-    if not args.no_record:
+    if args.record:
         print(f"qpos dataset root: {ROOT_QPOS}")
         print(f"ee_pose dataset root: {ROOT_EE}")
         roots = (ROOT_QPOS, ROOT_EE)

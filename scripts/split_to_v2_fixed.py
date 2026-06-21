@@ -5,6 +5,7 @@
 - Video: cut using v3 meta/episodes offsets (file_index + from_timestamp), NOT global concat
 - Meta: copy episodes.jsonl / tasks / stats, patch info.json to v2 paths
 - Optional --to-v21: per-episode stats + codebase_version v2.1 (local only, no Hub push)
+- Optional --compute-norm-stats (default on): openpi norm_stats.json for 5.train_pi.py
 
 Requires lerobot (e.g. openpi venv): uv run python .../split_to_v2_fixed.py --to-v21 ...
 """
@@ -37,9 +38,85 @@ class EpisodeRow:
     video_from_timestamp: dict[str, float]
 
 
-def run(cmd: list[str]) -> None:
+def run(cmd: list[str], *, cwd: Path | None = None) -> None:
     print("  $", " ".join(cmd))
-    subprocess.run(cmd, check=True)
+    subprocess.run(cmd, check=True, cwd=str(cwd) if cwd is not None else None)
+
+
+def openpi_repo_root() -> Path:
+    return (
+        Path(os.environ.get("OPENPI_ROOT", Path.home() / "openpi"))
+        .expanduser()
+        .resolve()
+    )
+
+
+def infer_openpi_norm_config(dataset_root: Path) -> tuple[str, str]:
+    """Guess openpi TrainConfig + asset_id from dataset directory name."""
+    name = dataset_root.name.lower()
+    if "ee_pose" in name or "eepose" in name:
+        return "pi0_auboI10_low_mem_finetune_ee_pose", "auboI10_ee_pose"
+    if "qpos" in name:
+        return "pi0_auboI10_low_mem_finetune_qpos", "auboI10_qpos"
+    raise ValueError(
+        f"Cannot infer openpi config from {dataset_root.name!r}; "
+        "pass --openpi-config-name and --openpi-asset-id explicitly."
+    )
+
+
+def openpi_norm_stats_path(openpi_root: Path, config_name: str, asset_id: str) -> Path:
+    return openpi_root / "assets" / config_name / asset_id / "norm_stats.json"
+
+
+def compute_openpi_norm_stats(
+    dataset_root: Path,
+    *,
+    openpi_root: Path,
+    config_name: str,
+    asset_id: str,
+    repo_id: str,
+    episodes: list[int] | None = None,
+    max_frames: int | None = None,
+    force: bool = True,
+) -> Path:
+    """Run openpi/scripts/compute_norm_stats.py (required before 5.train_pi.py)."""
+    out_path = openpi_norm_stats_path(openpi_root, config_name, asset_id)
+    if out_path.is_file() and not force:
+        print(f"\n=== OpenPI norm stats (skip) ===\n  exists: {out_path}")
+        return out_path
+    if out_path.is_file() and force:
+        print(f"\n=== OpenPI norm stats (overwrite) ===\n  replacing: {out_path}")
+
+    script = openpi_root / "scripts" / "compute_norm_stats.py"
+    if not script.is_file():
+        raise FileNotFoundError(f"Missing {script} (set OPENPI_ROOT?)")
+
+    cmd = [
+        "uv",
+        "run",
+        "python",
+        str(script),
+        "--config-name",
+        config_name,
+        "--repo-id",
+        repo_id,
+        "--lerobot-root",
+        str(dataset_root),
+        "--output-asset-id",
+        asset_id,
+    ]
+    if episodes is not None:
+        for ep in episodes:
+            cmd.extend(["--episodes", str(ep)])
+    if max_frames is not None:
+        cmd.extend(["--max-frames", str(max_frames)])
+
+    print("\n=== OpenPI norm stats ===")
+    run(cmd, cwd=openpi_root)
+    if not out_path.is_file():
+        raise RuntimeError(f"compute_norm_stats finished but missing {out_path}")
+    print(f"  wrote {out_path}")
+    return out_path
 
 
 def ffprobe_frame_count(path: Path) -> int:
@@ -486,10 +563,12 @@ def convert_to_v21(
 
 def main(
     src_root: str = os.path.expanduser(
-        "~/MyI10Tele/data_auboI10_ee_pose_v30_continuous_correctobjinit_gripperkp3000force100"
+        # "~/MyI10Tele/data_auboI10_ee_pose_v30_continuous_correctobjinit_gripperkp5000force75"
+        "~/MyI10Tele/data_auboI10_qpos_v30_continuous_correctobjinit_gripperkp5000force75"
     ),
     dst_root: str = os.path.expanduser(
-        "~/MyI10Tele/data_auboI10_ee_pose_v21_continuous_correctobjinit_gripperkp3000force100"
+        # "~/MyI10Tele/data_auboI10_ee_pose_v21_continuous_correctobjinit_gripperkp5000force75"
+        "~/MyI10Tele/data_auboI10_qpos_v21_continuous_correctobjinit_gripperkp5000force75"
     ),
     fps: float = 20.0,
     cameras: list[str] | None = None,
@@ -504,6 +583,13 @@ def main(
     repo_id: str = "auboI10",
     task: str | None = None,
     v21_num_workers: int = max(1, os.cpu_count()),
+    compute_norm_stats: bool = True,
+    skip_norm_stats: bool = False,
+    force_norm_stats: bool = True,
+    openpi_root: str | None = None,
+    openpi_config_name: str | None = None,
+    openpi_asset_id: str | None = None,
+    norm_stats_max_frames: int | None = None,
 ) -> None:
     """Convert v3 chunked dataset to v2 per-episode layout (openpi-compatible).
 
@@ -511,9 +597,37 @@ def main(
     ``v21_only``: only run v2.0->v2.1 on existing ``dst_root`` (skip v3 split).
     ``verify_v21_stats``: run lerobot's check_aggregate_stats against meta/stats.json
     (usually fails when stats were copied from v3.0 — video std differs from recomputed).
+    ``compute_norm_stats``: after v2.1, run openpi ``compute_norm_stats.py`` so
+    ``5.train_pi.py`` finds ``assets/<config>/<asset_id>/norm_stats.json``.
+    LeRobot v2.1 episode stats and openpi norm stats are different files.
     Use openpi venv (``lerobot`` installed). Safe with ``HF_HUB_OFFLINE=1``.
     """
     dst = Path(dst_root)
+    openpi = Path(openpi_root).expanduser() if openpi_root else openpi_repo_root()
+    do_norm_stats = compute_norm_stats and not skip_norm_stats
+
+    def maybe_compute_norm_stats() -> None:
+        if not do_norm_stats:
+            return
+        if openpi_config_name is not None or openpi_asset_id is not None:
+            if openpi_config_name is None or openpi_asset_id is None:
+                raise ValueError(
+                    "Pass both --openpi-config-name and --openpi-asset-id, or neither."
+                )
+            cfg_name, asset_id = openpi_config_name, openpi_asset_id
+        else:
+            cfg_name, asset_id = infer_openpi_norm_config(dst)
+        compute_openpi_norm_stats(
+            dst,
+            openpi_root=openpi,
+            config_name=cfg_name,
+            asset_id=asset_id,
+            repo_id=repo_id,
+            episodes=episodes,
+            max_frames=norm_stats_max_frames,
+            force=force_norm_stats,
+        )
+
     if v21_only:
         if not (dst / "meta" / "info.json").exists():
             raise FileNotFoundError(f"Missing {dst / 'meta' / 'info.json'}")
@@ -524,6 +638,7 @@ def main(
             num_workers=v21_num_workers,
             verify_stats=verify_v21_stats,
         )
+        maybe_compute_norm_stats()
         print("\nDone (v2.1 only):", dst)
         return
 
@@ -577,10 +692,19 @@ def main(
             num_workers=v21_num_workers,
             verify_stats=verify_v21_stats,
         )
+        maybe_compute_norm_stats()
+    elif do_norm_stats:
+        maybe_compute_norm_stats()
 
     print("\nDone. Point openpi --data.lerobot-root to:", dst)
     if to_v21:
         print("(LeRobot codebase_version v2.1 — training v2.0 warning should be gone)")
+    if do_norm_stats:
+        if openpi_config_name and openpi_asset_id:
+            cfg, aid = openpi_config_name, openpi_asset_id
+        else:
+            cfg, aid = infer_openpi_norm_config(dst)
+        print(f"OpenPI norm stats: {openpi_norm_stats_path(openpi, cfg, aid)}")
 
 
 if __name__ == "__main__":
